@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.env
+.idea/
+
+# Agent tooling and generated working artifacts — keep out of GitHub
+AGENTS.md
+.claude/
+.codex/
+_bmad/
+_bmad-output/
+docs/superpowers/

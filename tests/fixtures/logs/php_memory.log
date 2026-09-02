@@ -1,0 +1,2 @@
+[2026-09-02 10:15:00] PHP Fatal error: Allowed memory size of 134217728 bytes exhausted (tried to allocate 2048 bytes) in /var/www/app.php on line 42
+[2026-09-02 10:16:00] INFO: request completed
