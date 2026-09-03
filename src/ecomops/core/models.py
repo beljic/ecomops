@@ -18,6 +18,7 @@ class LogSource(BaseModel):
     path: str | None = None
     project: str | None = None
     alias: str | None = None
+    log_type: str | None = None
 
 
 class LogEntry(BaseModel):
