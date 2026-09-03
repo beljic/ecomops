@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ecomops.logs.time_ranges import TimeRange
+
 
 class Severity(StrEnum):
     critical = "critical"
@@ -28,6 +30,14 @@ class LogEntry(BaseModel):
     message: str
     raw: str
     line_number: int | None = None
+
+
+class LogReadResult(BaseModel):
+    entries: list[LogEntry]
+    line_count: int
+    byte_count: int
+    truncated: bool
+    actual_range: TimeRange | None = None
 
 
 class Evidence(BaseModel):
