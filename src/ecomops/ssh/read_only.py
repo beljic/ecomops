@@ -2,43 +2,89 @@ import shlex
 
 from ecomops.core.exceptions import ReadOnlyViolation
 
-_ALLOWED_COMMANDS = {"cat", "grep", "head", "rg", "stat", "tail"}
-_SHELL_OPERATORS = {";", "&&", "||", "|", ">", ">>", "<", "&"}
+_SHELL_SYNTAX = frozenset(";&|<>$`()")
+_MUTATING_OR_PRIVILEGED_COMMANDS = frozenset(
+    {
+        "bash",
+        "cat",
+        "chmod",
+        "chown",
+        "cp",
+        "dd",
+        "kill",
+        "ln",
+        "mkdir",
+        "mktemp",
+        "mv",
+        "perl",
+        "python",
+        "python3",
+        "rm",
+        "rmdir",
+        "sed",
+        "sh",
+        "shutdown",
+        "sudo",
+        "systemctl",
+        "tee",
+        "touch",
+        "truncate",
+        "uptime",
+        "zsh",
+    }
+)
+_SCRIPT_SUFFIXES = (".bash", ".fish", ".pl", ".py", ".rb", ".sh", ".zsh")
 
 
-def _contains_shell_operator(command: str) -> bool:
-    quote: str | None = None
-    escaped = False
-    index = 0
-    while index < len(command):
-        character = command[index]
-        if escaped:
-            escaped = False
-        elif character == "\\":
-            escaped = True
-        elif quote:
-            if character == quote:
-                quote = None
-        elif character in {"'", '"'}:
-            quote = character
-        elif character in _SHELL_OPERATORS:
-            return True
-        index += 1
-    return False
+def _contains_shell_operator(value: str) -> bool:
+    return any(character in _SHELL_SYNTAX for character in value)
+
+
+def _looks_like_command(path: str) -> bool:
+    first_word = path.split(maxsplit=1)[0]
+    command_name = first_word.rsplit("/", maxsplit=1)[-1]
+
+    if command_name in _MUTATING_OR_PRIVILEGED_COMMANDS:
+        return True
+    if path.lower().endswith(_SCRIPT_SUFFIXES):
+        return True
+    if first_word.startswith("./") and "/" not in first_word[2:]:
+        return True
+
+    # A path with spaces must still have a path component before the first
+    # space. Otherwise input such as ``curl https://...`` is command-shaped.
+    return bool(
+        any(character.isspace() for character in path) and "/" not in first_word
+    )
+
+
+class ReadOnlyPolicy:
+    """Construct the only remote command permitted by the SSH read path."""
+
+    @staticmethod
+    def validate_path(path: str) -> str:
+        """Return a configured log path or reject command-shaped input."""
+        if not isinstance(path, str) or not path:
+            raise ReadOnlyViolation("Log path must be a non-empty string")
+        if path != path.strip():
+            raise ReadOnlyViolation("Log path must not have surrounding whitespace")
+        if any(ord(character) < 32 or ord(character) == 127 for character in path):
+            raise ReadOnlyViolation("Control characters are not allowed in log paths")
+        if _contains_shell_operator(path):
+            raise ReadOnlyViolation("Shell operators are not allowed in read-only mode")
+        if _looks_like_command(path):
+            raise ReadOnlyViolation("Command-shaped input is not allowed as a log path")
+        return path
+
+    @staticmethod
+    def build_tail_command(path: str, lines: int) -> str:
+        """Build a bounded tail command from a validated path."""
+        if isinstance(lines, bool) or not isinstance(lines, int) or lines <= 0:
+            raise ValueError("lines must be a positive integer")
+        validated_path = ReadOnlyPolicy.validate_path(path)
+        return f"tail --lines {lines} -- {shlex.quote(validated_path)}"
 
 
 def validate_read_only_command(command: str) -> str:
-    """Return a command only when it is a single approved read-only command."""
-    if not command.strip():
-        raise ReadOnlyViolation("Empty command is not allowed")
-    if _contains_shell_operator(command):
-        raise ReadOnlyViolation("Shell operators are not allowed in read-only mode")
-    try:
-        parts = shlex.split(command)
-    except ValueError as error:
-        raise ReadOnlyViolation("Malformed shell command") from error
-    if not parts or parts[0] not in _ALLOWED_COMMANDS:
-        raise ReadOnlyViolation(
-            f"Command is not allowed in read-only mode: {parts[0] if parts else ''}"
-        )
-    return command
+    """Reject the legacy raw-command interface in favor of fixed builders."""
+    raise ReadOnlyViolation("Raw SSH commands are not accepted in read-only mode")
