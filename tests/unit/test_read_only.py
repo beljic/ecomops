@@ -1,7 +1,11 @@
 import pytest
 
 from ecomops.core.exceptions import ReadOnlyViolation
-from ecomops.ssh.read_only import ReadOnlyPolicy, validate_read_only_command
+from ecomops.ssh.read_only import (
+    MAX_TAIL_LINES,
+    ReadOnlyPolicy,
+    validate_read_only_command,
+)
 
 
 @pytest.mark.parametrize(
@@ -10,6 +14,7 @@ from ecomops.ssh.read_only import ReadOnlyPolicy, validate_read_only_command
         "/var/log/app.log",
         "var/log/app.log",
         "../logs/app.log",
+        "../logs/example-shop/transfer.log",
         "/var/log/store front/app's error.log",
     ],
 )
@@ -27,6 +32,21 @@ def test_tail_command_is_fixed_bounded_and_safely_quotes_the_path() -> None:
     )
 
 
+def test_tail_command_accepts_policy_maximum() -> None:
+    command = ReadOnlyPolicy.build_tail_command(
+        "../logs/example-shop/transfer.log", MAX_TAIL_LINES
+    )
+
+    assert command == (
+        f"tail --lines {MAX_TAIL_LINES} -- ../logs/example-shop/transfer.log"
+    )
+
+
+def test_tail_command_rejects_lines_above_policy_maximum() -> None:
+    with pytest.raises(ValueError, match="maximum"):
+        ReadOnlyPolicy.build_tail_command("/var/log/app.log", MAX_TAIL_LINES + 1)
+
+
 @pytest.mark.parametrize("lines", [0, -1, True])
 def test_tail_command_rejects_invalid_line_limits(lines: int) -> None:
     with pytest.raises(ValueError, match="lines"):
@@ -36,6 +56,23 @@ def test_tail_command_rejects_invalid_line_limits(lines: int) -> None:
 def test_raw_ssh_commands_are_not_accepted() -> None:
     with pytest.raises(ReadOnlyViolation):
         validate_read_only_command("tail --lines 100 -- /var/log/app.log")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm /var/log/app.log",
+        "sudo tail /var/log/app.log",
+        "tail --lines 10 -- /var/log/app.log > /tmp/copy.log",
+        "tail --lines 10 -- /var/log/app.log | cat",
+        "tail --lines $(cat /tmp/lines) -- /var/log/app.log",
+        "./cleanup.sh",
+        "arbitrary-command /var/log/app.log",
+    ],
+)
+def test_legacy_raw_commands_are_rejected(command: str) -> None:
+    with pytest.raises(ReadOnlyViolation):
+        validate_read_only_command(command)
 
 
 @pytest.mark.parametrize(

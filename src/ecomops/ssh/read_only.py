@@ -34,6 +34,7 @@ _MUTATING_OR_PRIVILEGED_COMMANDS = frozenset(
     }
 )
 _SCRIPT_SUFFIXES = (".bash", ".fish", ".pl", ".py", ".rb", ".sh", ".zsh")
+MAX_TAIL_LINES = 5000
 
 
 def _contains_shell_operator(value: str) -> bool:
@@ -78,9 +79,15 @@ class ReadOnlyPolicy:
 
     @staticmethod
     def build_tail_command(path: str, lines: int) -> str:
-        """Build a bounded tail command from a validated path."""
+        """Build a bounded command for a trusted, already-resolved alias path.
+
+        Project and alias resolution must happen before this boundary. This is
+        deliberately not a generic command or arbitrary-path interface.
+        """
         if isinstance(lines, bool) or not isinstance(lines, int) or lines <= 0:
             raise ValueError("lines must be a positive integer")
+        if lines > MAX_TAIL_LINES:
+            raise ValueError(f"lines exceed the maximum of {MAX_TAIL_LINES}")
         validated_path = ReadOnlyPolicy.validate_path(path)
         return f"tail --lines {lines} -- {shlex.quote(validated_path)}"
 
