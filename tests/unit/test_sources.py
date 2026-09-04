@@ -87,6 +87,41 @@ def test_recent_range_reads_the_tail_and_reports_actual_range(tmp_path: Path) ->
     )
 
 
+def test_tail_at_a_line_boundary_keeps_its_first_complete_line(tmp_path: Path) -> None:
+    path = tmp_path / "app.log"
+    older_line = "[2026-09-03 09:00:00] ERROR: older\n"
+    tail_lines = (
+        "[2026-09-03 12:00:00] ERROR: first recent\n"
+        "[2026-09-03 12:15:00] ERROR: second recent\n"
+    )
+    path.write_text(older_line + tail_lines, encoding="utf-8")
+
+    result = LocalLogSource().read(
+        alias(path), limits(max_bytes=len(tail_lines)), TimeRange.parse("1h", NOW)
+    )
+
+    assert [entry.message for entry in result.entries] == [
+        "first recent",
+        "second recent",
+    ]
+
+
+def test_bounded_tail_entries_have_unknown_source_line_numbers(tmp_path: Path) -> None:
+    path = tmp_path / "app.log"
+    older_line = "[2026-09-03 09:00:00] ERROR: older\n"
+    tail_lines = (
+        "[2026-09-03 12:00:00] ERROR: first recent\n"
+        "[2026-09-03 12:15:00] ERROR: second recent\n"
+    )
+    path.write_text(older_line + tail_lines, encoding="utf-8")
+
+    result = LocalLogSource().read(
+        alias(path), limits(max_bytes=len(tail_lines)), TimeRange.parse("1h", NOW)
+    )
+
+    assert [entry.line_number for entry in result.entries] == [None, None]
+
+
 def test_iso_range_is_explicitly_marked_incomplete(tmp_path: Path) -> None:
     path = tmp_path / "app.log"
     path.write_text("[2026-09-03 10:15:00] ERROR: matching\n", encoding="utf-8")

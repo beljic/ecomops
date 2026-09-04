@@ -41,11 +41,16 @@ class LocalLogSource:
         offset = 0 if time_range.start is None else size - byte_count
         data = read_local_bytes(path, offset=offset, max_bytes=byte_count)
         at_end = offset + len(data) >= size
-        lines = _complete_lines(data, starts_mid_line=offset > 0, at_end=at_end)
-        entries = _filter_entries(
-            parse_lines(lines, source=str(path)),
-            time_range=time_range,
-        )
+        starts_mid_line = offset > 0 and read_local_bytes(
+            path, offset=offset - 1, max_bytes=1
+        ) not in (b"\n", b"\r")
+        lines = _complete_lines(data, starts_mid_line=starts_mid_line, at_end=at_end)
+        entries = parse_lines(lines, source=str(path))
+        if offset > 0:
+            entries = [
+                entry.model_copy(update={"line_number": None}) for entry in entries
+            ]
+        entries = _filter_entries(entries, time_range=time_range)
 
         truncated = (
             len(data) < size
