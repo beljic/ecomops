@@ -55,6 +55,7 @@ connection:
   type: ssh
   host: logs.example.test
   user: log-reader
+  root: /srv/example-remote/current
   key_path: ~/.ssh/ecomops_readonly
   known_hosts_path: ~/.ssh/known_hosts
 log_aliases:

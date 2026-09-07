@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ecomops.core.exceptions import LogAliasNotFoundError
 from ecomops.core.models import LogSource
@@ -30,10 +30,11 @@ class SSHConnectionConfig(BaseModel):
     host: str
     user: str
     port: int = 22
+    root: Path | None = None
     key_path: Path | None = None
     known_hosts_path: Path | None = None
 
-    @field_validator("key_path", "known_hosts_path")
+    @field_validator("root", "key_path", "known_hosts_path")
     @classmethod
     def expand_optional_path(cls, path: Path | None) -> Path | None:
         return _expand_path(path) if path is not None else None
@@ -60,6 +61,18 @@ class ProjectConfig(BaseModel):
     connection: ConnectionConfig
     log_aliases: dict[str, LogAliasConfig] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_relative_ssh_paths(self) -> "ProjectConfig":
+        if isinstance(self.connection, SSHConnectionConfig):
+            if self.connection.root is None and any(
+                not Path(alias.path).expanduser().is_absolute()
+                for alias in self.log_aliases.values()
+            ):
+                raise ValueError(
+                    "SSH connection root is required for relative log alias paths."
+                )
+        return self
+
     def resolve_log_alias(self, alias: str) -> LogAliasConfig:
         try:
             return self.log_aliases[alias]
@@ -70,11 +83,11 @@ class ProjectConfig(BaseModel):
 
     def resolve_log_path(self, alias: str) -> Path:
         log_path = Path(self.resolve_log_alias(alias).path).expanduser()
-        if (
-            isinstance(self.connection, LocalConnectionConfig)
-            and not log_path.is_absolute()
-        ):
-            return self.connection.root / log_path
+        if not log_path.is_absolute():
+            if isinstance(self.connection, LocalConnectionConfig):
+                return self.connection.root / log_path
+            if self.connection.root is not None:
+                return self.connection.root / log_path
         return log_path
 
     def resolve_log_source(self, alias: str) -> LogSource:

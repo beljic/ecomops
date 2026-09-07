@@ -137,6 +137,50 @@ connection:
     assert ProjectRegistry.load().get("storefront").name == "storefront"
 
 
+def test_resolves_relative_ssh_log_alias_path_against_remote_root() -> None:
+    project = ProjectConfig.model_validate(
+        {
+            "name": "production",
+            "connection": {
+                "type": "ssh",
+                "host": "logs.example.test",
+                "user": "readonly",
+                "root": "/srv/example/current",
+            },
+            "log_aliases": {
+                "access": {
+                    "path": "../logs/example/access.log",
+                    "type": "nginx",
+                }
+            },
+        }
+    )
+
+    assert project.resolve_log_path("access") == Path(
+        "/srv/example/current/../logs/example/access.log"
+    )
+
+
+def test_rejects_relative_ssh_log_alias_without_remote_root() -> None:
+    with pytest.raises(ValidationError, match="root"):
+        ProjectConfig.model_validate(
+            {
+                "name": "production",
+                "connection": {
+                    "type": "ssh",
+                    "host": "logs.example.test",
+                    "user": "readonly",
+                },
+                "log_aliases": {
+                    "nginx-error": {
+                        "path": "var/log/nginx/error.log",
+                        "type": "nginx",
+                    }
+                },
+            }
+        )
+
+
 def test_rejects_group_writable_projects_directory(tmp_path: Path) -> None:
     projects_dir = tmp_path / "projects"
     projects_dir.mkdir()
