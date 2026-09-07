@@ -1,7 +1,9 @@
+from ecomops.ai.redaction import redact_report
 from ecomops.core.models import AnalysisReport
 
 
 def render_terminal(report: AnalysisReport) -> str:
+    report = redact_report(report)
     lines: list[str] = []
     if report.source.project is not None:
         lines.extend(

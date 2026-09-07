@@ -1,10 +1,12 @@
 from typing import Any
 
+from ecomops.ai.redaction import redact_report
 from ecomops.core.models import AnalysisReport
 
 
 def structured_report(report: AnalysisReport) -> dict[str, Any]:
     """Convert an analysis report to the stable MCP response shape."""
+    report = redact_report(report)
     return {
         "metadata": {
             "connection_type": report.connection_type,

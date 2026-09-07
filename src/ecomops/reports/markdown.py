@@ -1,8 +1,10 @@
+from ecomops.ai.redaction import redact_report
 from ecomops.core.models import AnalysisReport
 
 
 def render_markdown(report: AnalysisReport) -> str:
     """Render a report as a compact Markdown document."""
+    report = redact_report(report)
     lines = ["# EcomOps Analysis", ""]
     if report.source.project is not None:
         lines.extend(
