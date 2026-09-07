@@ -453,6 +453,44 @@ def test_paramiko_transport_rejects_writable_known_hosts_before_loading(
     assert ssh_client.loaded_host_key_files == []
 
 
+def test_paramiko_transport_reports_missing_known_hosts_file_clearly(
+    tmp_path: Path,
+) -> None:
+    missing_known_hosts = tmp_path / "does-not-exist"
+    channel = FakeChannel([b""])
+    client, ssh_client, _, _ = paramiko_client(
+        channel, known_hosts_path=missing_known_hosts
+    )
+
+    with pytest.raises(ConfigurationError, match=str(missing_known_hosts)):
+        client.read_tail(
+            "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+        )
+
+    assert ssh_client.loaded_host_key_files == []
+
+
+def test_permission_error_class_name_from_a_real_paramiko_exception_is_recognized() -> (
+    None
+):
+    # paramiko is lazy-imported (see _load_paramiko), so this branch is
+    # matched by class name rather than isinstance against the real
+    # paramiko.AuthenticationException. Use a same-named stand-in here so the
+    # match itself is exercised without importing paramiko's exception type.
+    AuthenticationException = type("AuthenticationException", (Exception,), {})
+    channel = FakeChannel([])
+    client, ssh_client, _, _ = paramiko_client(
+        channel, connect_error=AuthenticationException("denied")
+    )
+
+    with pytest.raises(SSHPermissionDeniedError):
+        client.read_tail(
+            "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+        )
+
+    assert ssh_client.closed is True
+
+
 def test_explicit_private_key_disables_default_key_and_agent_discovery() -> None:
     client, _, _, _ = paramiko_client(FakeChannel([b""]))
 

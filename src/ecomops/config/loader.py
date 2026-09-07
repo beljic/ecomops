@@ -30,7 +30,10 @@ def validate_directory_permissions(path: Path) -> None:
 
 
 def _reject_if_group_or_world_writable(path: Path, *, kind: str) -> None:
-    mode = path.stat().st_mode
+    try:
+        mode = path.stat().st_mode
+    except OSError as error:
+        raise ConfigurationError(f"{kind} '{path}' cannot be accessed.") from error
     if mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise ConfigurationError(
             f"{kind} '{path}' must not be group- or world-writable."

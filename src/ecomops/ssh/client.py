@@ -200,7 +200,7 @@ def _read_bounded_channel(
     truncated = False
     completed = False
 
-    while newline_count <= max_lines and byte_count < max_bytes:
+    while byte_count < max_bytes:
         try:
             channel.settimeout(_remaining_timeout(deadline, monotonic))
         except SSHTransportError:
@@ -235,17 +235,6 @@ def _read_bounded_channel(
     if len(lines) > max_lines:
         truncated = True
         lines = lines[-max_lines:]
-    retained_lines: list[bytes] = []
-    retained_bytes = 0
-    for line in reversed(lines):
-        if retained_bytes + len(line) > max_bytes:
-            truncated = True
-            break
-        retained_lines.append(line)
-        retained_bytes += len(line)
-    if len(retained_lines) != len(lines):
-        truncated = True
-    lines = list(reversed(retained_lines))
 
     return RemoteReadResult(
         data=b"".join(lines), byte_count=byte_count, truncated=truncated

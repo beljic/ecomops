@@ -35,9 +35,6 @@ _MUTATING_OR_PRIVILEGED_COMMANDS = frozenset(
 )
 _SCRIPT_SUFFIXES = (".bash", ".fish", ".pl", ".py", ".rb", ".sh", ".zsh")
 MAX_READ_LINES = 50_000
-# One extra line lets the transport detect that the configured read limit
-# truncated the remote tail, while the public request remains capped above.
-MAX_TAIL_LINES = MAX_READ_LINES + 1
 
 
 def _contains_shell_operator(value: str) -> bool:
@@ -81,22 +78,12 @@ class ReadOnlyPolicy:
         return path
 
     @staticmethod
-    def build_tail_command(path: str, lines: int) -> str:
+    def build_tail_bytes_command(path: str, max_bytes: int) -> str:
         """Build a bounded command for a trusted, already-resolved alias path.
 
         Project and alias resolution must happen before this boundary. This is
         deliberately not a generic command or arbitrary-path interface.
         """
-        if isinstance(lines, bool) or not isinstance(lines, int) or lines <= 0:
-            raise ValueError("lines must be a positive integer")
-        if lines > MAX_TAIL_LINES:
-            raise ValueError(f"lines exceed the maximum of {MAX_TAIL_LINES}")
-        validated_path = ReadOnlyPolicy.validate_path(path)
-        return f"tail -n {lines} -- {shlex.quote(validated_path)}"
-
-    @staticmethod
-    def build_tail_bytes_command(path: str, max_bytes: int) -> str:
-        """Build the bounded remote byte read used by the SSH transport."""
         if (
             isinstance(max_bytes, bool)
             or not isinstance(max_bytes, int)
