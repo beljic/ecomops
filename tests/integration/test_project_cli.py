@@ -97,6 +97,34 @@ def test_direct_local_analysis_does_not_render_project_read_metadata(
     assert "Sampling:" not in result.stdout
 
 
+def test_project_analyze_supports_json_and_markdown_formats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    log_path = tmp_path / "system.log"
+    log_path.write_text(
+        "PHP Fatal error: Allowed memory size exhausted\n", encoding="utf-8"
+    )
+    write_project_config(projects_dir, log_path)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+
+    runner = CliRunner()
+    json_result = runner.invoke(
+        app,
+        ["project", "local-store", "analyze", "php", "--format", "json"],
+    )
+    markdown_result = runner.invoke(
+        app,
+        ["project", "local-store", "analyze", "php", "--format", "markdown"],
+    )
+
+    assert json_result.exit_code == 0
+    assert '"connection_type": "local"' in json_result.stdout
+    assert markdown_result.exit_code == 0
+    assert "# EcomOps Analysis" in markdown_result.stdout
+
+
 @pytest.mark.parametrize(
     ("arguments", "expected_error"),
     [

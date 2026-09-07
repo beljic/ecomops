@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import typer
 from pydantic import ValidationError
@@ -15,7 +16,7 @@ from ecomops.core.exceptions import EcomOpsError
 from ecomops.core.models import AnalysisContext, LogSource
 from ecomops.core.services import analyze_project_log
 from ecomops.logs.readers import read_local_file
-from ecomops.reports.terminal import render_terminal
+from ecomops.reports.render import render_report
 
 app = typer.Typer(
     name="ecomops",
@@ -30,7 +31,12 @@ def callback() -> None:
 
 
 @app.command()
-def analyze(path: Path) -> None:
+def analyze(
+    path: Path,
+    output_format: Literal["terminal", "json", "markdown"] = typer.Option(
+        "terminal", "--format"
+    ),
+) -> None:
     """Analyze a local log file."""
     if not path.is_file():
         raise typer.BadParameter(f"File not found: {path}", param_hint="path")
@@ -46,7 +52,7 @@ def analyze(path: Path) -> None:
             CronAnalyzer(),
         ]
     ).run(entries, context)
-    typer.echo(render_terminal(report))
+    typer.echo(render_report(report, output_format))
 
 
 @app.command("project")
@@ -56,6 +62,9 @@ def project(
     until: str | None = typer.Option(None, "--until"),
     max_lines: int | None = typer.Option(None, "--max-lines", min=1),
     max_bytes: int | None = typer.Option(None, "--max-bytes", min=1),
+    output_format: Literal["terminal", "json", "markdown"] = typer.Option(
+        "terminal", "--format"
+    ),
 ) -> None:
     """List, show, or analyze configured projects."""
     try:
@@ -93,7 +102,7 @@ def project(
     except (EcomOpsError, ValidationError, ValueError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from error
-    typer.echo(render_terminal(report))
+    typer.echo(render_report(report, output_format))
 
 
 @app.command()
