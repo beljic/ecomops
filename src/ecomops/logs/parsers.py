@@ -5,8 +5,9 @@ from datetime import datetime
 from ecomops.core.models import LogEntry
 
 _PREFIX = re.compile(
-    r"^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s*"
-    r"(?:(?P<level>[A-Za-z]+):\s*)?(?P<message>.*)$"
+    r"^\[(?P<timestamp>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\]\s*"
+    r"(?:(?P<level>[A-Za-z][A-Za-z0-9_.]*):\s*)?(?P<message>.*)$"
 )
 
 

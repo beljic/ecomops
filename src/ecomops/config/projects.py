@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from ecomops.config.loader import expand_path, load_project_file, projects_directory
+from ecomops.config.loader import (
+    expand_path,
+    load_project_file,
+    projects_directory,
+    validate_directory_permissions,
+)
 from ecomops.config.schema import ProjectConfig
 from ecomops.core.exceptions import ConfigurationError, ProjectNotFoundError
 
@@ -22,6 +27,7 @@ class ProjectRegistry:
             raise ConfigurationError(
                 f"Projects path '{directory}' must be a directory."
             )
+        validate_directory_permissions(directory)
 
         projects: dict[str, ProjectConfig] = {}
         project_files = sorted(

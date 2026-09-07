@@ -142,6 +142,7 @@ def _read_bounded_channel(
 ) -> RemoteReadResult:
     chunks: list[bytes] = []
     byte_count = 0
+    newline_count = 0
     truncated = False
     completed = False
 
@@ -160,7 +161,8 @@ def _read_bounded_channel(
 
         chunks.append(chunk)
         byte_count += len(chunk)
-        if b"\n".join(chunks).count(b"\n") > max_lines:
+        newline_count += chunk.count(b"\n")
+        if newline_count > max_lines:
             truncated = True
             break
 

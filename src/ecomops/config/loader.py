@@ -22,10 +22,18 @@ def expand_path(path: str | Path) -> Path:
 
 
 def validate_file_permissions(path: Path) -> None:
+    _reject_if_group_or_world_writable(path, kind="Configuration file")
+
+
+def validate_directory_permissions(path: Path) -> None:
+    _reject_if_group_or_world_writable(path, kind="Configuration directory")
+
+
+def _reject_if_group_or_world_writable(path: Path, *, kind: str) -> None:
     mode = path.stat().st_mode
     if mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise ConfigurationError(
-            f"Configuration file '{path}' must not be group- or world-writable."
+            f"{kind} '{path}' must not be group- or world-writable."
         )
 
 

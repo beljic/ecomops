@@ -89,7 +89,7 @@ class ReadOnlyPolicy:
         if lines > MAX_TAIL_LINES:
             raise ValueError(f"lines exceed the maximum of {MAX_TAIL_LINES}")
         validated_path = ReadOnlyPolicy.validate_path(path)
-        return f"tail --lines {lines} -- {shlex.quote(validated_path)}"
+        return f"tail -n {lines} -- {shlex.quote(validated_path)}"
 
 
 def validate_read_only_command(command: str) -> str:

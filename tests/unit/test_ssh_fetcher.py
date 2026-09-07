@@ -200,7 +200,7 @@ def test_paramiko_transport_verifies_hosts_and_uses_bounded_session() -> None:
     ]
     assert transport.open_session_timeouts == [7]
     assert channel.timeouts == [7]
-    assert channel.commands == ["tail --lines 3 -- /var/log/app.log"]
+    assert channel.commands == ["tail -n 3 -- /var/log/app.log"]
     assert channel.recv_sizes
     assert max(channel.recv_sizes) <= 64
     assert channel.closed is True
@@ -210,6 +210,24 @@ def test_paramiko_transport_verifies_hosts_and_uses_bounded_session() -> None:
     assert channel.x11_forwarding_requested is False
     assert transport.port_forwarding_requested is False
     assert ssh_client.sftp_opened is False
+
+
+def test_paramiko_transport_counts_newlines_across_chunk_boundaries() -> None:
+    # 20 real lines of 5 bytes each, delivered as 20 separate small recv()
+    # chunks (as a real TCP stream would). A naive `b"\n".join(chunks)`
+    # newline count inserts one spurious separator per chunk boundary and
+    # truncates well before the real 15-line limit is reached.
+    line = b"abcd\n"
+    channel = FakeChannel([line for _ in range(20)])
+    client, _, _, _ = paramiko_client(channel)
+
+    result = client.read_tail(
+        "/var/log/app.log", max_lines=15, max_bytes=1_000, timeout_seconds=5
+    )
+
+    assert result.data.count(b"\n") == 15
+    assert result.byte_count == 80
+    assert result.truncated is True
 
 
 def test_paramiko_transport_closes_at_line_limit_and_keeps_latest_lines() -> None:

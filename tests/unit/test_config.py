@@ -77,9 +77,9 @@ log_aliases:
     assert isinstance(project.connection, SSHConnectionConfig)
     assert project.connection.host == "logs.example.test"
     assert project.connection.key_path == Path("~/.ssh/ecomops_readonly").expanduser()
-    assert project.connection.known_hosts_path == Path(
-        "~/.ssh/known_hosts"
-    ).expanduser()
+    assert (
+        project.connection.known_hosts_path == Path("~/.ssh/known_hosts").expanduser()
+    )
     assert project.resolve_log_alias("nginx-error").type == "nginx"
     assert project.resolve_log_path("nginx-error") == Path("/var/log/nginx/error.log")
 
@@ -135,6 +135,15 @@ connection:
     monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
 
     assert ProjectRegistry.load().get("storefront").name == "storefront"
+
+
+def test_rejects_group_writable_projects_directory(tmp_path: Path) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    projects_dir.chmod(0o775)
+
+    with pytest.raises(ConfigurationError, match="group- or world-writable"):
+        ProjectRegistry.load(projects_dir)
 
 
 def test_rejects_group_writable_project_file(tmp_path: Path) -> None:

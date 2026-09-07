@@ -87,6 +87,21 @@ def test_recent_range_reads_the_tail_and_reports_actual_range(tmp_path: Path) ->
     )
 
 
+def test_recent_range_matches_magento_style_timestamps(tmp_path: Path) -> None:
+    path = tmp_path / "exception.log"
+    path.write_text(
+        "[2026-09-03T09:00:00.000000+00:00] main.CRITICAL: old\n"
+        "[2026-09-03T12:00:00.000000+00:00] main.CRITICAL: recent\n",
+        encoding="utf-8",
+    )
+
+    result = LocalLogSource().read(
+        alias(path), limits(max_bytes=200), TimeRange.parse("1h", NOW)
+    )
+
+    assert [entry.message for entry in result.entries] == ["recent"]
+
+
 def test_tail_at_a_line_boundary_keeps_its_first_complete_line(tmp_path: Path) -> None:
     path = tmp_path / "app.log"
     older_line = "[2026-09-03 09:00:00] ERROR: older\n"

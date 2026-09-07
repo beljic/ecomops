@@ -27,9 +27,7 @@ def test_tail_command_is_fixed_bounded_and_safely_quotes_the_path() -> None:
         "/var/log/store front/app's error.log", 100
     )
 
-    assert command == (
-        "tail --lines 100 -- '/var/log/store front/app'\"'\"'s error.log'"
-    )
+    assert command == ("tail -n 100 -- '/var/log/store front/app'\"'\"'s error.log'")
 
 
 def test_tail_command_accepts_policy_maximum() -> None:
@@ -37,9 +35,7 @@ def test_tail_command_accepts_policy_maximum() -> None:
         "../logs/example-shop/transfer.log", MAX_TAIL_LINES
     )
 
-    assert command == (
-        f"tail --lines {MAX_TAIL_LINES} -- ../logs/example-shop/transfer.log"
-    )
+    assert command == (f"tail -n {MAX_TAIL_LINES} -- ../logs/example-shop/transfer.log")
 
 
 def test_tail_command_rejects_lines_above_policy_maximum() -> None:
