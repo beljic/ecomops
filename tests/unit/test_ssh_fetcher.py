@@ -31,10 +31,12 @@ class FakeChannel:
         *,
         exit_status: int = 0,
         close_error: BaseException | None = None,
+        execution_error: BaseException | None = None,
     ) -> None:
         self._chunks = list(chunks)
         self._exit_status = exit_status
         self._close_error = close_error
+        self._execution_error = execution_error
         self.commands: list[str] = []
         self.recv_sizes: list[int] = []
         self.timeouts: list[float] = []
@@ -48,6 +50,8 @@ class FakeChannel:
 
     def exec_command(self, command: str) -> None:
         self.commands.append(command)
+        if self._execution_error is not None:
+            raise self._execution_error
 
     def recv(self, size: int) -> bytes:
         self.recv_sizes.append(size)
@@ -228,7 +232,7 @@ def test_paramiko_transport_verifies_hosts_and_uses_bounded_session(
     assert 0 < transport.open_session_timeouts[0] <= 7
     assert channel.timeouts
     assert all(0 < timeout <= 7 for timeout in channel.timeouts)
-    assert channel.commands == ["tail -n 3 -- /var/log/app.log"]
+    assert channel.commands == ["tail -c 64 -- /var/log/app.log"]
     assert channel.recv_sizes
     assert max(channel.recv_sizes) <= 64
     assert channel.closed is True
@@ -240,7 +244,7 @@ def test_paramiko_transport_verifies_hosts_and_uses_bounded_session(
     assert ssh_client.sftp_opened is False
 
 
-def test_paramiko_transport_requests_only_one_headroom_line_at_read_limit() -> None:
+def test_paramiko_transport_bounds_remote_read_by_requested_bytes() -> None:
     channel = FakeChannel([b""])
     client, _, _, _ = paramiko_client(channel)
 
@@ -251,7 +255,7 @@ def test_paramiko_transport_requests_only_one_headroom_line_at_read_limit() -> N
         timeout_seconds=7,
     )
 
-    assert channel.commands == ["tail -n 50001 -- /var/log/app.log"]
+    assert channel.commands == ["tail -c 64 -- /var/log/app.log"]
 
 
 def test_paramiko_transport_rejects_caller_requests_above_configured_limit() -> None:
@@ -300,7 +304,7 @@ def test_paramiko_transport_closes_at_line_limit_and_keeps_latest_lines() -> Non
 
 
 def test_paramiko_transport_keeps_newest_complete_lines_at_byte_limit() -> None:
-    channel = FakeChannel([b"one\ntwo\nthree\n"])
+    channel = FakeChannel([b"two\nthree\n"])
     client, ssh_client, _, _ = paramiko_client(channel)
 
     result = client.read_tail(
@@ -308,9 +312,32 @@ def test_paramiko_transport_keeps_newest_complete_lines_at_byte_limit() -> None:
     )
 
     assert result == RemoteReadResult(
-        data=b"two\nthree\n", byte_count=14, truncated=True
+        data=b"two\nthree\n", byte_count=10, truncated=True
     )
-    assert channel.recv_sizes == [64, 64]
+    assert channel.commands == ["tail -c 10 -- /var/log/app.log"]
+    assert channel.recv_sizes == [10]
+    assert channel.closed is True
+    assert ssh_client.closed is True
+
+
+def test_paramiko_transport_sets_remaining_timeout_before_blocking_execution() -> None:
+    clock_values = iter([0.0, 0.0, 0.0, 4.0])
+    channel = FakeChannel([], execution_error=TimeoutError("timed out"))
+    transport = FakeTransport(channel)
+    ssh_client = FakeSSHClient(transport)
+    client = ParamikoSSHClient(
+        connection(),
+        paramiko_module=FakeParamiko(ssh_client),
+        monotonic=lambda: next(clock_values),
+    )
+
+    with pytest.raises(SSHTransportError, match="SSH connection or read failed"):
+        client.read_tail(
+            "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+        )
+
+    assert channel.timeouts == [1.0]
+    assert channel.commands == ["tail -c 100 -- /var/log/app.log"]
     assert channel.closed is True
     assert ssh_client.closed is True
 
@@ -329,7 +356,7 @@ def test_paramiko_transport_closes_on_timeout_and_marks_partial_read() -> None:
 
 
 def test_paramiko_transport_uses_a_total_monotonic_deadline() -> None:
-    clock_values = iter([0.0, 0.0, 0.0, 4.0, 5.0])
+    clock_values = iter([0.0, 0.0, 0.0, 0.0, 4.0, 5.0])
     channel = FakeChannel([b"one\n", b"two\n"])
     transport = FakeTransport(channel)
     ssh_client = FakeSSHClient(transport)
@@ -345,7 +372,7 @@ def test_paramiko_transport_uses_a_total_monotonic_deadline() -> None:
 
     assert result == RemoteReadResult(data=b"one\n", byte_count=4, truncated=True)
     assert channel.recv_sizes == [64]
-    assert channel.timeouts == [1.0]
+    assert channel.timeouts == [5.0, 1.0]
 
 
 def test_paramiko_transport_attempts_client_cleanup_when_channel_close_fails() -> None:

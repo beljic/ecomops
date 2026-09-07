@@ -94,6 +94,18 @@ class ReadOnlyPolicy:
         validated_path = ReadOnlyPolicy.validate_path(path)
         return f"tail -n {lines} -- {shlex.quote(validated_path)}"
 
+    @staticmethod
+    def build_tail_bytes_command(path: str, max_bytes: int) -> str:
+        """Build the bounded remote byte read used by the SSH transport."""
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes <= 0
+        ):
+            raise ValueError("max_bytes must be a positive integer")
+        validated_path = ReadOnlyPolicy.validate_path(path)
+        return f"tail -c {max_bytes} -- {shlex.quote(validated_path)}"
+
 
 def validate_read_only_command(command: str) -> str:
     """Reject the legacy raw-command interface in favor of fixed builders."""

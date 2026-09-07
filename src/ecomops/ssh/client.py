@@ -97,7 +97,7 @@ class ParamikoSSHClient:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
 
-        command = ReadOnlyPolicy.build_tail_command(path, max_lines + 1)
+        command = ReadOnlyPolicy.build_tail_bytes_command(path, max_bytes)
         deadline = self._monotonic() + timeout_seconds
         client: _SSHClient | None = None
         channel: _Channel | None = None
@@ -121,6 +121,7 @@ class ParamikoSSHClient:
             channel = transport.open_session(
                 timeout=_remaining_timeout(deadline, self._monotonic)
             )
+            channel.settimeout(_remaining_timeout(deadline, self._monotonic))
             channel.exec_command(command)
             return _read_bounded_channel(
                 channel,
@@ -199,14 +200,14 @@ def _read_bounded_channel(
     truncated = False
     completed = False
 
-    while newline_count <= max_lines:
+    while newline_count <= max_lines and byte_count < max_bytes:
         try:
             channel.settimeout(_remaining_timeout(deadline, monotonic))
         except SSHTransportError:
             truncated = True
             break
         try:
-            chunk = channel.recv(_RECV_CHUNK_SIZE)
+            chunk = channel.recv(min(_RECV_CHUNK_SIZE, max_bytes - byte_count))
         except TimeoutError:
             truncated = True
             break
@@ -223,6 +224,9 @@ def _read_bounded_channel(
         if newline_count > max_lines:
             truncated = True
             break
+
+    if byte_count == max_bytes:
+        truncated = True
 
     data = b"".join(chunks)
     lines = data.splitlines(keepends=True)
