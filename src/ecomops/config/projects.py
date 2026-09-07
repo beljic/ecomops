@@ -51,3 +51,6 @@ class ProjectRegistry:
             raise ProjectNotFoundError(
                 f"Project '{name}' is not configured."
             ) from error
+
+    def all(self) -> list[ProjectConfig]:
+        return [self._projects[name] for name in sorted(self._projects)]
