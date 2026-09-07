@@ -34,7 +34,10 @@ _MUTATING_OR_PRIVILEGED_COMMANDS = frozenset(
     }
 )
 _SCRIPT_SUFFIXES = (".bash", ".fish", ".pl", ".py", ".rb", ".sh", ".zsh")
-MAX_TAIL_LINES = 5000
+MAX_READ_LINES = 50_000
+# One extra line lets the transport detect that the configured read limit
+# truncated the remote tail, while the public request remains capped above.
+MAX_TAIL_LINES = MAX_READ_LINES + 1
 
 
 def _contains_shell_operator(value: str) -> bool:

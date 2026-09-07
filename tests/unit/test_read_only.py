@@ -38,9 +38,15 @@ def test_tail_command_accepts_policy_maximum() -> None:
     assert command == (f"tail -n {MAX_TAIL_LINES} -- ../logs/example-shop/transfer.log")
 
 
+def test_tail_command_accepts_the_internal_headroom_line_only() -> None:
+    command = ReadOnlyPolicy.build_tail_command("/var/log/app.log", 50_001)
+
+    assert command == "tail -n 50001 -- /var/log/app.log"
+
+
 def test_tail_command_rejects_lines_above_policy_maximum() -> None:
     with pytest.raises(ValueError, match="maximum"):
-        ReadOnlyPolicy.build_tail_command("/var/log/app.log", MAX_TAIL_LINES + 1)
+        ReadOnlyPolicy.build_tail_command("/var/log/app.log", 50_002)
 
 
 @pytest.mark.parametrize("lines", [0, -1, True])

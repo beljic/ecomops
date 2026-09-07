@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import importlib
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+from ecomops.config.loader import validate_file_permissions
 from ecomops.config.schema import SSHConnectionConfig
-from ecomops.core.exceptions import SSHTransportError
+from ecomops.core.exceptions import (
+    ConfigurationError,
+    SSHPermissionDeniedError,
+    SSHTransportError,
+)
 
-from .read_only import ReadOnlyPolicy
+from .read_only import MAX_READ_LINES, ReadOnlyPolicy
 
 _LOGGER = logging.getLogger(__name__)
 _RECV_CHUNK_SIZE = 64
@@ -67,9 +74,11 @@ class ParamikoSSHClient:
         connection: SSHConnectionConfig,
         *,
         paramiko_module: _ParamikoModule | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._connection = connection
         self._paramiko = paramiko_module or _load_paramiko()
+        self._monotonic = monotonic
 
     def read_tail(
         self,
@@ -79,12 +88,17 @@ class ParamikoSSHClient:
         max_bytes: int,
         timeout_seconds: int,
     ) -> RemoteReadResult:
+        if isinstance(max_lines, bool) or not isinstance(max_lines, int):
+            raise ValueError("max_lines must be a positive integer")
+        if max_lines <= 0 or max_lines > MAX_READ_LINES:
+            raise ValueError(f"max_lines must be between 1 and {MAX_READ_LINES}")
         if max_bytes <= 0:
             raise ValueError("max_bytes must be greater than zero")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
 
         command = ReadOnlyPolicy.build_tail_command(path, max_lines + 1)
+        deadline = self._monotonic() + timeout_seconds
         client: _SSHClient | None = None
         channel: _Channel | None = None
 
@@ -92,31 +106,41 @@ class ParamikoSSHClient:
             client = self._paramiko.SSHClient()
             client.load_system_host_keys()
             if self._connection.known_hosts_path is not None:
+                validate_file_permissions(self._connection.known_hosts_path)
                 client.load_host_keys(str(self._connection.known_hosts_path))
             client.set_missing_host_key_policy(self._paramiko.RejectPolicy())
-            client.connect(**self._connection_arguments(timeout_seconds))
+            client.connect(
+                **self._connection_arguments(
+                    _remaining_timeout(deadline, self._monotonic)
+                )
+            )
 
             transport = client.get_transport()
             if transport is None:
                 raise SSHTransportError("SSH connection did not provide a transport")
-            channel = transport.open_session(timeout=timeout_seconds)
-            channel.settimeout(timeout_seconds)
+            channel = transport.open_session(
+                timeout=_remaining_timeout(deadline, self._monotonic)
+            )
             channel.exec_command(command)
             return _read_bounded_channel(
-                channel, max_lines=max_lines, max_bytes=max_bytes
+                channel,
+                max_lines=max_lines,
+                max_bytes=max_bytes,
+                deadline=deadline,
+                monotonic=self._monotonic,
             )
-        except SSHTransportError:
+        except (ConfigurationError, SSHTransportError):
             raise
         except Exception as error:
             _LOGGER.debug("SSH remote log read failed")
+            if _is_permission_error(error):
+                raise SSHPermissionDeniedError("SSH permission denied") from error
             raise SSHTransportError("SSH connection or read failed") from error
         finally:
-            if channel is not None:
-                channel.close()
-            if client is not None:
-                client.close()
+            _close_quietly(channel, "channel")
+            _close_quietly(client, "client")
 
-    def _connection_arguments(self, timeout_seconds: int) -> dict[str, object]:
+    def _connection_arguments(self, timeout_seconds: float) -> dict[str, object]:
         arguments: dict[str, object] = {
             "hostname": self._connection.host,
             "port": self._connection.port,
@@ -125,8 +149,8 @@ class ParamikoSSHClient:
             "banner_timeout": timeout_seconds,
             "auth_timeout": timeout_seconds,
             "channel_timeout": timeout_seconds,
-            "allow_agent": True,
-            "look_for_keys": True,
+            "allow_agent": self._connection.key_path is None,
+            "look_for_keys": self._connection.key_path is None,
         }
         if self._connection.key_path is not None:
             arguments["key_filename"] = str(self._connection.key_path)
@@ -137,8 +161,37 @@ def _load_paramiko() -> _ParamikoModule:
     return cast(_ParamikoModule, importlib.import_module("paramiko"))
 
 
+def _remaining_timeout(deadline: float, monotonic: Callable[[], float]) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise SSHTransportError("SSH operation timed out")
+    return remaining
+
+
+def _is_permission_error(error: Exception) -> bool:
+    return isinstance(error, PermissionError) or error.__class__.__name__ in {
+        "AuthenticationException",
+        "BadAuthenticationType",
+        "PasswordRequiredException",
+    }
+
+
+def _close_quietly(resource: _Channel | _SSHClient | None, name: str) -> None:
+    if resource is None:
+        return
+    try:
+        resource.close()
+    except Exception:
+        _LOGGER.debug("SSH %s cleanup failed", name)
+
+
 def _read_bounded_channel(
-    channel: _Channel, *, max_lines: int, max_bytes: int
+    channel: _Channel,
+    *,
+    max_lines: int,
+    max_bytes: int,
+    deadline: float,
+    monotonic: Callable[[], float],
 ) -> RemoteReadResult:
     chunks: list[bytes] = []
     byte_count = 0
@@ -146,9 +199,14 @@ def _read_bounded_channel(
     truncated = False
     completed = False
 
-    while byte_count < max_bytes:
+    while newline_count <= max_lines:
         try:
-            chunk = channel.recv(min(_RECV_CHUNK_SIZE, max_bytes - byte_count))
+            channel.settimeout(_remaining_timeout(deadline, monotonic))
+        except SSHTransportError:
+            truncated = True
+            break
+        try:
+            chunk = channel.recv(_RECV_CHUNK_SIZE)
         except TimeoutError:
             truncated = True
             break
@@ -166,9 +224,6 @@ def _read_bounded_channel(
             truncated = True
             break
 
-    if byte_count == max_bytes:
-        truncated = True
-
     data = b"".join(chunks)
     lines = data.splitlines(keepends=True)
     if not completed and lines and not lines[-1].endswith((b"\n", b"\r")):
@@ -176,6 +231,17 @@ def _read_bounded_channel(
     if len(lines) > max_lines:
         truncated = True
         lines = lines[-max_lines:]
+    retained_lines: list[bytes] = []
+    retained_bytes = 0
+    for line in reversed(lines):
+        if retained_bytes + len(line) > max_bytes:
+            truncated = True
+            break
+        retained_lines.append(line)
+        retained_bytes += len(line)
+    if len(retained_lines) != len(lines):
+        truncated = True
+    lines = list(reversed(retained_lines))
 
     return RemoteReadResult(
         data=b"".join(lines), byte_count=byte_count, truncated=truncated

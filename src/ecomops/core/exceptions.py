@@ -10,6 +10,10 @@ class SSHTransportError(EcomOpsError):
     """Raised when a bounded SSH log read cannot be completed safely."""
 
 
+class SSHPermissionDeniedError(SSHTransportError):
+    """Raised when SSH authentication or authorization is denied."""
+
+
 class ConfigurationError(EcomOpsError):
     """Raised when a project configuration cannot be loaded safely."""
 

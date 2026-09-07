@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from ecomops.config.schema import LogAliasConfig, SSHConnectionConfig
-from ecomops.core.exceptions import SSHTransportError
+from ecomops.core.exceptions import (
+    ConfigurationError,
+    SSHPermissionDeniedError,
+    SSHTransportError,
+)
 from ecomops.logs.sources import ReadLimits
 from ecomops.logs.time_ranges import TimeRange
 from ecomops.ssh.client import ParamikoSSHClient, RemoteReadResult
@@ -26,9 +30,11 @@ class FakeChannel:
         chunks: list[bytes | BaseException],
         *,
         exit_status: int = 0,
+        close_error: BaseException | None = None,
     ) -> None:
         self._chunks = list(chunks)
         self._exit_status = exit_status
+        self._close_error = close_error
         self.commands: list[str] = []
         self.recv_sizes: list[int] = []
         self.timeouts: list[float] = []
@@ -75,6 +81,8 @@ class FakeChannel:
 
     def close(self) -> None:
         self.closed = True
+        if self._close_error is not None:
+            raise self._close_error
 
 
 class FakeTransport:
@@ -170,10 +178,14 @@ def paramiko_client(
     return client, ssh_client, transport, module
 
 
-def test_paramiko_transport_verifies_hosts_and_uses_bounded_session() -> None:
+def test_paramiko_transport_verifies_hosts_and_uses_bounded_session(
+    tmp_path: Path,
+) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("logs.example.test ssh-ed25519 key\n", encoding="utf-8")
     channel = FakeChannel([b"one\ntwo\n", b""])
     client, ssh_client, transport, module = paramiko_client(
-        channel, known_hosts_path=Path("/keys/known_hosts")
+        channel, known_hosts_path=known_hosts
     )
 
     result = client.read_tail(
@@ -182,24 +194,40 @@ def test_paramiko_transport_verifies_hosts_and_uses_bounded_session() -> None:
 
     assert result == RemoteReadResult(data=b"one\ntwo\n", byte_count=8, truncated=False)
     assert ssh_client.system_host_keys_loaded is True
-    assert ssh_client.loaded_host_key_files == ["/keys/known_hosts"]
+    assert ssh_client.loaded_host_key_files == [str(known_hosts)]
     assert ssh_client.missing_host_key_policies == [module.reject_policy]
-    assert ssh_client.connect_calls == [
-        {
-            "hostname": "logs.example.test",
-            "port": 2222,
-            "username": "readonly",
-            "key_filename": "/keys/read-only",
-            "timeout": 7,
-            "banner_timeout": 7,
-            "auth_timeout": 7,
-            "channel_timeout": 7,
-            "allow_agent": True,
-            "look_for_keys": True,
-        }
-    ]
-    assert transport.open_session_timeouts == [7]
-    assert channel.timeouts == [7]
+    assert len(ssh_client.connect_calls) == 1
+    arguments = ssh_client.connect_calls[0]
+    assert arguments | {
+        "timeout": 0,
+        "banner_timeout": 0,
+        "auth_timeout": 0,
+        "channel_timeout": 0,
+    } == {
+        "hostname": "logs.example.test",
+        "port": 2222,
+        "username": "readonly",
+        "key_filename": "/keys/read-only",
+        "timeout": 0,
+        "banner_timeout": 0,
+        "auth_timeout": 0,
+        "channel_timeout": 0,
+        "allow_agent": False,
+        "look_for_keys": False,
+    }
+    assert all(
+        0 < arguments[name] <= 7
+        for name in (
+            "timeout",
+            "banner_timeout",
+            "auth_timeout",
+            "channel_timeout",
+        )
+    )
+    assert len(transport.open_session_timeouts) == 1
+    assert 0 < transport.open_session_timeouts[0] <= 7
+    assert channel.timeouts
+    assert all(0 < timeout <= 7 for timeout in channel.timeouts)
     assert channel.commands == ["tail -n 3 -- /var/log/app.log"]
     assert channel.recv_sizes
     assert max(channel.recv_sizes) <= 64
@@ -210,6 +238,32 @@ def test_paramiko_transport_verifies_hosts_and_uses_bounded_session() -> None:
     assert channel.x11_forwarding_requested is False
     assert transport.port_forwarding_requested is False
     assert ssh_client.sftp_opened is False
+
+
+def test_paramiko_transport_requests_only_one_headroom_line_at_read_limit() -> None:
+    channel = FakeChannel([b""])
+    client, _, _, _ = paramiko_client(channel)
+
+    client.read_tail(
+        "/var/log/app.log",
+        max_lines=50_000,
+        max_bytes=64,
+        timeout_seconds=7,
+    )
+
+    assert channel.commands == ["tail -n 50001 -- /var/log/app.log"]
+
+
+def test_paramiko_transport_rejects_caller_requests_above_configured_limit() -> None:
+    client, _, _, _ = paramiko_client(FakeChannel([b""]))
+
+    with pytest.raises(ValueError, match="50000"):
+        client.read_tail(
+            "/var/log/app.log",
+            max_lines=50_001,
+            max_bytes=64,
+            timeout_seconds=7,
+        )
 
 
 def test_paramiko_transport_counts_newlines_across_chunk_boundaries() -> None:
@@ -245,7 +299,7 @@ def test_paramiko_transport_closes_at_line_limit_and_keeps_latest_lines() -> Non
     assert ssh_client.closed is True
 
 
-def test_paramiko_transport_closes_at_byte_limit_without_partial_line() -> None:
+def test_paramiko_transport_keeps_newest_complete_lines_at_byte_limit() -> None:
     channel = FakeChannel([b"one\ntwo\nthree\n"])
     client, ssh_client, _, _ = paramiko_client(channel)
 
@@ -253,8 +307,10 @@ def test_paramiko_transport_closes_at_byte_limit_without_partial_line() -> None:
         "/var/log/app.log", max_lines=10, max_bytes=10, timeout_seconds=5
     )
 
-    assert result == RemoteReadResult(data=b"one\ntwo\n", byte_count=10, truncated=True)
-    assert channel.recv_sizes == [10]
+    assert result == RemoteReadResult(
+        data=b"two\nthree\n", byte_count=14, truncated=True
+    )
+    assert channel.recv_sizes == [64, 64]
     assert channel.closed is True
     assert ssh_client.closed is True
 
@@ -268,6 +324,39 @@ def test_paramiko_transport_closes_on_timeout_and_marks_partial_read() -> None:
     )
 
     assert result == RemoteReadResult(data=b"one\n", byte_count=4, truncated=True)
+    assert channel.closed is True
+    assert ssh_client.closed is True
+
+
+def test_paramiko_transport_uses_a_total_monotonic_deadline() -> None:
+    clock_values = iter([0.0, 0.0, 0.0, 4.0, 5.0])
+    channel = FakeChannel([b"one\n", b"two\n"])
+    transport = FakeTransport(channel)
+    ssh_client = FakeSSHClient(transport)
+    client = ParamikoSSHClient(
+        connection(),
+        paramiko_module=FakeParamiko(ssh_client),
+        monotonic=lambda: next(clock_values),
+    )
+
+    result = client.read_tail(
+        "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+    )
+
+    assert result == RemoteReadResult(data=b"one\n", byte_count=4, truncated=True)
+    assert channel.recv_sizes == [64]
+    assert channel.timeouts == [1.0]
+
+
+def test_paramiko_transport_attempts_client_cleanup_when_channel_close_fails() -> None:
+    channel = FakeChannel([b""], close_error=RuntimeError("close failed"))
+    client, ssh_client, _, _ = paramiko_client(channel)
+
+    result = client.read_tail(
+        "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+    )
+
+    assert result == RemoteReadResult(data=b"", byte_count=0, truncated=False)
     assert channel.closed is True
     assert ssh_client.closed is True
 
@@ -294,6 +383,57 @@ def test_transport_failure_does_not_log_or_expose_credentials(
     assert credential not in str(raised.value)
     assert credential not in caplog.text
     assert ssh_client.closed is True
+
+
+def test_permission_failure_is_sanitized_without_exposing_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    credential = "not-a-real-secret"
+    channel = FakeChannel([])
+    client, ssh_client, _, _ = paramiko_client(
+        channel, connect_error=PermissionError(f"permission denied: {credential}")
+    )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(
+            SSHPermissionDeniedError, match="SSH permission denied"
+        ) as raised,
+    ):
+        client.read_tail(
+            "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+        )
+
+    assert credential not in str(raised.value)
+    assert credential not in caplog.text
+    assert ssh_client.closed is True
+
+
+def test_paramiko_transport_rejects_writable_known_hosts_before_loading(
+    tmp_path: Path,
+) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("logs.example.test ssh-ed25519 key\n", encoding="utf-8")
+    known_hosts.chmod(0o664)
+    channel = FakeChannel([b""])
+    client, ssh_client, _, _ = paramiko_client(channel, known_hosts_path=known_hosts)
+
+    with pytest.raises(ConfigurationError, match="group- or world-writable"):
+        client.read_tail(
+            "/var/log/app.log", max_lines=10, max_bytes=100, timeout_seconds=5
+        )
+
+    assert ssh_client.loaded_host_key_files == []
+
+
+def test_explicit_private_key_disables_default_key_and_agent_discovery() -> None:
+    client, _, _, _ = paramiko_client(FakeChannel([b""]))
+
+    arguments = client._connection_arguments(7)
+
+    assert arguments["key_filename"] == "/keys/read-only"
+    assert arguments["allow_agent"] is False
+    assert arguments["look_for_keys"] is False
 
 
 class FakeTailClient:
