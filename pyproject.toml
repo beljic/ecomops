@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 ecomops = "ecomops.cli.app:main"
+ecomops-mcp = "ecomops.mcp.server:main"
 
 [dependency-groups]
 dev = [

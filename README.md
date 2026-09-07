@@ -5,6 +5,8 @@ Read-only ecommerce log analyzer for Magento, PHP, Nginx, MySQL and cron logs.
 See [the public architecture document](docs/ARCHITECTURE.md) for the
 prompt-to-analysis flow and read-only security boundaries.
 
+See [the MCP setup guide](docs/MCP.md) for connecting a local MCP client.
+
 ## Security and read-only guarantee
 
 EcomOps is designed to read logs only. The MCP interface does not expose a
