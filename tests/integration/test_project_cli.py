@@ -67,6 +67,20 @@ def test_project_commands_list_show_and_analyze_bounded_local_log(
     assert "Sampling: bounded" in analyzed.stdout
 
 
+def test_project_show_missing_name_returns_readable_error_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+
+    result = CliRunner().invoke(app, ["project", "show", "missing-store"])
+
+    assert result.exit_code == 1
+    assert "Error: Project 'missing-store' is not configured." in result.output
+    assert "Traceback" not in result.output
+
+
 def test_direct_local_analysis_does_not_render_project_read_metadata(
     tmp_path: Path,
 ) -> None:

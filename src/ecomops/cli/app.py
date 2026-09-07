@@ -58,30 +58,30 @@ def project(
     max_bytes: int | None = typer.Option(None, "--max-bytes", min=1),
 ) -> None:
     """List, show, or analyze configured projects."""
-    if arguments == ["list"]:
-        for configured_project in ProjectRegistry.load().all():
-            typer.echo(
-                f"{configured_project.name} "
-                f"({configured_project.connection.type.upper()})"
-            )
-        return
-
-    if len(arguments) == 2 and arguments[0] == "show":
-        configured_project = ProjectRegistry.load().get(arguments[1])
-        typer.echo(f"Project: {configured_project.name}")
-        typer.echo(f"Platform: {configured_project.platform}")
-        typer.echo(f"Connection: {configured_project.connection.type.upper()}")
-        typer.echo("Log aliases:")
-        for alias, config in configured_project.log_aliases.items():
-            typer.echo(f"  {alias}: {config.type} ({config.path})")
-        return
-
-    if len(arguments) != 3 or arguments[1] != "analyze":
-        raise typer.BadParameter(
-            "Expected 'list', 'show <name>', or '<name> analyze <alias>'."
-        )
-
     try:
+        if arguments == ["list"]:
+            for configured_project in ProjectRegistry.load().all():
+                typer.echo(
+                    f"{configured_project.name} "
+                    f"({configured_project.connection.type.upper()})"
+                )
+            return
+
+        if len(arguments) == 2 and arguments[0] == "show":
+            configured_project = ProjectRegistry.load().get(arguments[1])
+            typer.echo(f"Project: {configured_project.name}")
+            typer.echo(f"Platform: {configured_project.platform}")
+            typer.echo(f"Connection: {configured_project.connection.type.upper()}")
+            typer.echo("Log aliases:")
+            for alias, config in configured_project.log_aliases.items():
+                typer.echo(f"  {alias}: {config.type} ({config.path})")
+            return
+
+        if len(arguments) != 3 or arguments[1] != "analyze":
+            raise typer.BadParameter(
+                "Expected 'list', 'show <name>', or '<name> analyze <alias>'."
+            )
+
         report = analyze_project_log(
             arguments[0],
             arguments[2],
