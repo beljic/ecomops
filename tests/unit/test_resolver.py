@@ -4,6 +4,8 @@ import pytest
 
 from ecomops.config.schema import ProjectConfig
 from ecomops.core.exceptions import LogAliasNotFoundError, ProjectNotFoundError
+from ecomops.core.models import LogEntry, LogReadResult
+from ecomops.logs.time_ranges import TimeRange
 
 
 def local_project(log_path: Path) -> ProjectConfig:
@@ -120,3 +122,61 @@ def test_service_rejects_an_explicit_zero_line_limit(
 
     with pytest.raises(ValueError, match="max_lines"):
         services.analyze_project_log("local-store", "php", max_lines=0)
+
+
+def test_service_rejects_missing_alias_before_source_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.config.projects import ProjectRegistry
+    from ecomops.core import services
+
+    monkeypatch.setattr(
+        ProjectRegistry,
+        "load",
+        classmethod(
+            lambda cls: ProjectRegistry({"local-store": local_project(tmp_path / "x")})
+        ),
+    )
+
+    with pytest.raises(LogAliasNotFoundError, match="missing"):
+        services.analyze_project_log("local-store", "missing")
+
+
+def test_service_includes_ssh_read_metadata_in_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ecomops.config.projects import ProjectRegistry
+    from ecomops.core import services
+
+    class StubSource:
+        def read(
+            self, alias: object, limits: object, time_range: TimeRange
+        ) -> LogReadResult:
+            return LogReadResult(
+                entries=[
+                    LogEntry(
+                        source="/var/log/nginx/error.log",
+                        message="upstream timed out",
+                        raw="upstream timed out",
+                    )
+                ],
+                line_count=1,
+                byte_count=20,
+                truncated=True,
+            )
+
+    project = ssh_project()
+    monkeypatch.setattr(
+        ProjectRegistry,
+        "load",
+        classmethod(lambda cls: ProjectRegistry({project.name: project})),
+    )
+    monkeypatch.setattr(services, "resolve_source", lambda *args: StubSource())
+
+    report = services.analyze_project_log(project.name, "nginx")
+
+    assert report.connection_type == "ssh"
+    assert report.remote_access is True
+    assert report.line_count == 1
+    assert report.byte_count == 20
+    assert report.truncated is True

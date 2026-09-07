@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 
 from ecomops import __version__
 from ecomops.analyzers.pipeline import AnalyzerPipeline
@@ -10,6 +11,7 @@ from ecomops.analyzers.rules.mysql import MySQLAnalyzer
 from ecomops.analyzers.rules.nginx import NginxAnalyzer
 from ecomops.analyzers.rules.php import PhpAnalyzer
 from ecomops.config.projects import ProjectRegistry
+from ecomops.core.exceptions import EcomOpsError
 from ecomops.core.models import AnalysisContext, LogSource
 from ecomops.core.services import analyze_project_log
 from ecomops.logs.readers import read_local_file
@@ -79,14 +81,18 @@ def project(
             "Expected 'list', 'show <name>', or '<name> analyze <alias>'."
         )
 
-    report = analyze_project_log(
-        arguments[0],
-        arguments[2],
-        since=since,
-        until=until,
-        max_lines=max_lines,
-        max_bytes=max_bytes,
-    )
+    try:
+        report = analyze_project_log(
+            arguments[0],
+            arguments[2],
+            since=since,
+            until=until,
+            max_lines=max_lines,
+            max_bytes=max_bytes,
+        )
+    except (EcomOpsError, ValidationError, ValueError) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
     typer.echo(render_terminal(report))
 
 

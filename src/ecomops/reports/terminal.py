@@ -2,12 +2,16 @@ from ecomops.core.models import AnalysisReport
 
 
 def render_terminal(report: AnalysisReport) -> str:
-    lines = [
-        f"Connection: {report.connection_type.upper()}",
-        f"Remote access: {'yes' if report.remote_access else 'no'}",
-        f"Read: {report.line_count} lines, {report.byte_count} bytes",
-        f"Sampling: {'bounded' if report.truncated else 'complete'}",
-    ]
+    lines: list[str] = []
+    if report.source.project is not None:
+        lines.extend(
+            [
+                f"Connection: {report.connection_type.upper()}",
+                f"Remote access: {'yes' if report.remote_access else 'no'}",
+                f"Read: {report.line_count} lines, {report.byte_count} bytes",
+                f"Sampling: {'bounded' if report.truncated else 'complete'}",
+            ]
+        )
     if not report.findings:
         lines.append("No findings.")
         return "\n".join(lines)
