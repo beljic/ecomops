@@ -6,6 +6,10 @@ class ReadOnlyViolation(EcomOpsError):
     """Raised when a command is not provably read-only."""
 
 
+class SSHTransportError(EcomOpsError):
+    """Raised when a bounded SSH log read cannot be completed safely."""
+
+
 class ConfigurationError(EcomOpsError):
     """Raised when a project configuration cannot be loaded safely."""
 
