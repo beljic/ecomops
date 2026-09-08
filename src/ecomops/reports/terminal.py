@@ -14,6 +14,8 @@ def render_terminal(report: AnalysisReport) -> str:
                 f"Sampling: {'bounded' if report.truncated else 'complete'}",
             ]
         )
+    if report.ai_enriched:
+        lines.append(f"AI enrichment: enabled, provider={report.ai_provider}")
     if not report.findings:
         lines.append("No findings.")
         return "\n".join(lines)

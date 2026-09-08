@@ -16,6 +16,8 @@ def render_markdown(report: AnalysisReport) -> str:
                 "",
             ]
         )
+    if report.ai_enriched:
+        lines.extend([f"- AI enrichment: `{report.ai_provider}`", ""])
     if not report.findings:
         lines.append("No findings.")
         return "\n".join(lines)

@@ -74,6 +74,7 @@ class AnalysisReport(BaseModel):
     generated_at: datetime
     summary: str | None = None
     ai_enriched: bool = False
+    ai_provider: str | None = None
     connection_type: str = "local"
     remote_access: bool = False
     line_count: int = 0

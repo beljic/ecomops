@@ -5,6 +5,7 @@ import typer
 from pydantic import ValidationError
 
 from ecomops import __version__
+from ecomops.ai.enrichment import enrich_report
 from ecomops.analyzers.pipeline import AnalyzerPipeline
 from ecomops.analyzers.rules.cron import CronAnalyzer
 from ecomops.analyzers.rules.magento import MagentoAnalyzer
@@ -36,6 +37,8 @@ def analyze(
     output_format: Literal["terminal", "json", "markdown"] = typer.Option(
         "terminal", "--format"
     ),
+    ai: bool = typer.Option(False, "--ai"),
+    ai_provider: str = typer.Option("noop", "--ai-provider"),
 ) -> None:
     """Analyze a local log file."""
     if not path.is_file():
@@ -52,6 +55,11 @@ def analyze(
             CronAnalyzer(),
         ]
     ).run(entries, context)
+    if ai:
+        try:
+            report = enrich_report(report, context, ai_provider)
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="--ai-provider") from error
     typer.echo(render_report(report, output_format))
 
 
@@ -65,6 +73,8 @@ def project(
     output_format: Literal["terminal", "json", "markdown"] = typer.Option(
         "terminal", "--format"
     ),
+    ai: bool = typer.Option(False, "--ai"),
+    ai_provider: str = typer.Option("noop", "--ai-provider"),
 ) -> None:
     """List, show, or analyze configured projects."""
     try:
@@ -99,6 +109,13 @@ def project(
             max_lines=max_lines,
             max_bytes=max_bytes,
         )
+        if ai:
+            context = AnalysisContext(
+                source=report.source,
+                project_name=report.source.project,
+                since=since,
+            )
+            report = enrich_report(report, context, ai_provider)
     except (EcomOpsError, ValidationError, ValueError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from error
