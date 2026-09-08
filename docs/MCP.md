@@ -19,7 +19,12 @@ After installing the package with `uv`, configure the MCP client to launch:
   "mcpServers": {
     "ecomops": {
       "command": "uv",
-      "args": ["run", "ecomops-mcp"],
+      "args": [
+        "run",
+        "--project",
+        "/path/to/ecomops",
+        "ecomops-mcp"
+      ],
       "env": {
         "ECOMOPS_PROJECTS_DIR": "/Users/example/.config/ecomops/projects"
       }

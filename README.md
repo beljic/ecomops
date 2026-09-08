@@ -10,6 +10,41 @@ See [the MCP setup guide](docs/MCP.md) for connecting a local MCP client.
 See [the AI host model](docs/AI.md) for the boundary between EcomOps and the
 MCP client that interprets findings.
 
+## Install the MCP server
+
+EcomOps is currently installed from source:
+
+```bash
+git clone https://github.com/beljic/ecomops.git
+cd ecomops
+uv sync
+```
+
+Configure your MCP client to start the server from the checkout:
+
+```json
+{
+  "mcpServers": {
+    "ecomops": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/path/to/ecomops",
+        "ecomops-mcp"
+      ],
+      "env": {
+        "ECOMOPS_PROJECTS_DIR": "/path/to/private/ecomops-projects"
+      }
+    }
+  }
+}
+```
+
+Replace only the example paths. Keep project YAML files and SSH key paths
+outside this public repository. Full project configuration and security
+guidance is in [the MCP setup guide](docs/MCP.md).
+
 ## Security and read-only guarantee
 
 EcomOps is designed to read logs only. The MCP interface does not expose a
