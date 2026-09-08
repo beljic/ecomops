@@ -7,6 +7,9 @@ prompt-to-analysis flow and read-only security boundaries.
 
 See [the MCP setup guide](docs/MCP.md) for connecting a local MCP client.
 
+See [the AI host model](docs/AI.md) for the boundary between EcomOps and the
+MCP client that interprets findings.
+
 ## Security and read-only guarantee
 
 EcomOps is designed to read logs only. The MCP interface does not expose a
