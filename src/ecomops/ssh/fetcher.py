@@ -20,6 +20,7 @@ class _TailClient(Protocol):
         max_lines: int,
         max_bytes: int,
         timeout_seconds: int,
+        password: str | None = None,
     ) -> RemoteReadResult: ...
 
 
@@ -27,9 +28,14 @@ class SSHLogSource:
     """Parse a bounded, read-only SSH tail into the common log result model."""
 
     def __init__(
-        self, connection: SSHConnectionConfig, *, client: _TailClient | None = None
+        self,
+        connection: SSHConnectionConfig,
+        *,
+        client: _TailClient | None = None,
+        password: str | None = None,
     ) -> None:
         self._client = client or ParamikoSSHClient(connection)
+        self._password = password
 
     def read(
         self,
@@ -37,12 +43,21 @@ class SSHLogSource:
         limits: ReadLimits,
         time_range: TimeRange,
     ) -> LogReadResult:
-        remote = self._client.read_tail(
-            alias.path,
-            max_lines=limits.max_lines,
-            max_bytes=limits.max_bytes,
-            timeout_seconds=limits.timeout_seconds,
-        )
+        if self._password is None:
+            remote = self._client.read_tail(
+                alias.path,
+                max_lines=limits.max_lines,
+                max_bytes=limits.max_bytes,
+                timeout_seconds=limits.timeout_seconds,
+            )
+        else:
+            remote = self._client.read_tail(
+                alias.path,
+                max_lines=limits.max_lines,
+                max_bytes=limits.max_bytes,
+                timeout_seconds=limits.timeout_seconds,
+                password=self._password,
+            )
         lines = [
             line.decode("utf-8", errors="replace")
             for line in remote.data.splitlines(keepends=True)

@@ -57,10 +57,12 @@ def test_resolve_source_uses_configured_ssh_profile(
     from ecomops.logs import resolver
 
     received: list[object] = []
+    received_passwords: list[object] = []
 
     class RecordingSSHLogSource:
-        def __init__(self, connection: object) -> None:
+        def __init__(self, connection: object, **kwargs: object) -> None:
             received.append(connection)
+            received_passwords.append(kwargs.get("password"))
 
     monkeypatch.setattr(resolver, "SSHLogSource", RecordingSSHLogSource)
     project = ssh_project()
@@ -69,6 +71,25 @@ def test_resolve_source_uses_configured_ssh_profile(
 
     assert isinstance(source, RecordingSSHLogSource)
     assert received == [project.connection]
+    assert received_passwords == [None]
+
+
+def test_resolve_source_forwards_ephemeral_ssh_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ecomops.logs import resolver
+
+    received: list[object] = []
+
+    class RecordingSSHLogSource:
+        def __init__(self, connection: object, **kwargs: object) -> None:
+            received.append(kwargs["password"])
+
+    monkeypatch.setattr(resolver, "SSHLogSource", RecordingSSHLogSource)
+
+    resolver.resolve_source(ssh_project(), "nginx", ssh_password="one-time-secret")
+
+    assert received == ["one-time-secret"]
 
 
 def test_missing_alias_is_rejected_before_ssh_source_construction(

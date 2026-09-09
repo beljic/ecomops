@@ -501,6 +501,23 @@ def test_explicit_private_key_disables_default_key_and_agent_discovery() -> None
     assert arguments["look_for_keys"] is False
 
 
+def test_ephemeral_password_is_passed_to_paramiko_without_key_discovery() -> None:
+    channel = FakeChannel([b""])
+    client, ssh_client, _, _ = paramiko_client(channel)
+
+    client.read_tail(
+        "/var/log/app.log",
+        max_lines=10,
+        max_bytes=100,
+        timeout_seconds=5,
+        password="one-time-secret",
+    )
+
+    assert ssh_client.connect_calls[0]["password"] == "one-time-secret"
+    assert ssh_client.connect_calls[0]["allow_agent"] is False
+    assert ssh_client.connect_calls[0]["look_for_keys"] is False
+
+
 class FakeTailClient:
     def __init__(self, result: RemoteReadResult) -> None:
         self.result = result

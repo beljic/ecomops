@@ -24,11 +24,15 @@ def analyze_project_log(
     until: str | None = None,
     max_lines: int | None = None,
     max_bytes: int | None = None,
+    ssh_password: str | None = None,
 ) -> AnalysisReport:
     """Read a configured project alias and run the deterministic analyzers."""
     project_config = ProjectRegistry.load().get(project)
     alias_config = project_config.resolve_log_alias(alias)
-    source = resolve_source(project_config, alias)
+    if ssh_password is None:
+        source = resolve_source(project_config, alias)
+    else:
+        source = resolve_source(project_config, alias, ssh_password=ssh_password)
     time_range = _resolve_time_range(since, until)
     limits = ReadLimits(
         max_lines=MAX_READ_LINES if max_lines is None else max_lines,

@@ -1,9 +1,12 @@
+import importlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from ecomops.cli.app import app
+from ecomops.core.models import AnalysisReport, LogSource
 
 
 def write_project_config(projects_dir: Path, log_path: Path) -> None:
@@ -123,6 +126,62 @@ def test_project_analyze_supports_json_and_markdown_formats(
     assert '"connection_type": "local"' in json_result.stdout
     assert markdown_result.exit_code == 0
     assert "# EcomOps Analysis" in markdown_result.stdout
+
+
+def test_project_analyze_can_prompt_for_ephemeral_ssh_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    (projects_dir / "remote.yaml").write_text(
+        """
+name: remote
+platform: magento
+connection:
+  type: ssh
+  host: logs.example.test
+  user: readonly
+log_aliases:
+  access:
+    path: /var/log/access.log
+    type: nginx
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+
+    cli_module = importlib.import_module("ecomops.cli.app")
+    received: dict[str, object] = {}
+
+    def fake_analyze_project_log(
+        project: str,
+        alias: str,
+        since: str,
+        until: str | None,
+        max_lines: int | None,
+        max_bytes: int | None,
+        ssh_password: str | None,
+    ) -> AnalysisReport:
+        received["password"] = ssh_password
+        return AnalysisReport(
+            source=LogSource(type="ssh", project=project, alias=alias),
+            findings=[],
+            generated_at=datetime(2026, 9, 9, tzinfo=UTC),
+            connection_type="ssh",
+            remote_access=True,
+        )
+
+    monkeypatch.setattr(cli_module, "getpass", lambda prompt: "one-time-secret")
+    monkeypatch.setattr(cli_module, "analyze_project_log", fake_analyze_project_log)
+
+    result = CliRunner().invoke(
+        app,
+        ["project", "remote", "analyze", "access", "--prompt-password"],
+    )
+
+    assert result.exit_code == 0
+    assert received == {"password": "one-time-secret"}
+    assert "one-time-secret" not in result.output
 
 
 @pytest.mark.parametrize(

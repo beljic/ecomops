@@ -87,6 +87,7 @@ class ParamikoSSHClient:
         max_lines: int,
         max_bytes: int,
         timeout_seconds: int,
+        password: str | None = None,
     ) -> RemoteReadResult:
         if isinstance(max_lines, bool) or not isinstance(max_lines, int):
             raise ValueError("max_lines must be a positive integer")
@@ -111,7 +112,8 @@ class ParamikoSSHClient:
             client.set_missing_host_key_policy(self._paramiko.RejectPolicy())
             client.connect(
                 **self._connection_arguments(
-                    _remaining_timeout(deadline, self._monotonic)
+                    _remaining_timeout(deadline, self._monotonic),
+                    password=password,
                 )
             )
 
@@ -141,7 +143,9 @@ class ParamikoSSHClient:
             _close_quietly(channel, "channel")
             _close_quietly(client, "client")
 
-    def _connection_arguments(self, timeout_seconds: float) -> dict[str, object]:
+    def _connection_arguments(
+        self, timeout_seconds: float, *, password: str | None = None
+    ) -> dict[str, object]:
         arguments: dict[str, object] = {
             "hostname": self._connection.host,
             "port": self._connection.port,
@@ -150,9 +154,11 @@ class ParamikoSSHClient:
             "banner_timeout": timeout_seconds,
             "auth_timeout": timeout_seconds,
             "channel_timeout": timeout_seconds,
-            "allow_agent": self._connection.key_path is None,
-            "look_for_keys": self._connection.key_path is None,
+            "allow_agent": password is None and self._connection.key_path is None,
+            "look_for_keys": password is None and self._connection.key_path is None,
         }
+        if password is not None:
+            arguments["password"] = password
         if self._connection.key_path is not None:
             arguments["key_filename"] = str(self._connection.key_path)
         return arguments

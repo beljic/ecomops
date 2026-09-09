@@ -1,3 +1,4 @@
+from getpass import getpass
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,7 @@ from ecomops.analyzers.rules.mysql import MySQLAnalyzer
 from ecomops.analyzers.rules.nginx import NginxAnalyzer
 from ecomops.analyzers.rules.php import PhpAnalyzer
 from ecomops.config.projects import ProjectRegistry
+from ecomops.config.schema import SSHConnectionConfig
 from ecomops.core.exceptions import EcomOpsError
 from ecomops.core.models import AnalysisContext, LogSource
 from ecomops.core.services import analyze_project_log
@@ -75,6 +77,7 @@ def project(
     ),
     ai: bool = typer.Option(False, "--ai"),
     ai_provider: str = typer.Option("noop", "--ai-provider"),
+    prompt_password: bool = typer.Option(False, "--prompt-password", hidden=True),
 ) -> None:
     """List, show, or analyze configured projects."""
     try:
@@ -101,6 +104,18 @@ def project(
                 "Expected 'list', 'show <name>', or '<name> analyze <alias>'."
             )
 
+        configured_project = ProjectRegistry.load().get(arguments[0])
+        ssh_password: str | None = None
+        if prompt_password:
+            if not isinstance(configured_project.connection, SSHConnectionConfig):
+                raise typer.BadParameter(
+                    "--prompt-password is only valid for SSH projects."
+                )
+            ssh_password = getpass(
+                f"SSH password for {configured_project.connection.user}@"
+                f"{configured_project.connection.host}: "
+            )
+
         report = analyze_project_log(
             arguments[0],
             arguments[2],
@@ -108,6 +123,7 @@ def project(
             until=until,
             max_lines=max_lines,
             max_bytes=max_bytes,
+            ssh_password=ssh_password,
         )
         if ai:
             context = AnalysisContext(

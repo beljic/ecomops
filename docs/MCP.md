@@ -73,6 +73,17 @@ SSH passwords are not stored in project configuration. The SSH account should
 be dedicated to read-only log access and host-key verification must remain
 enabled.
 
+For a direct CLI run, password authentication can be requested explicitly:
+
+```bash
+uv run ecomops project example-remote analyze access --prompt-password
+```
+
+The password is read without echo, kept only in memory for that one SSH
+connection, and never written to YAML, environment files, logs, or temporary
+files. The MCP server does not accept passwords as tool arguments; configure
+its SSH projects with a key or SSH agent instead.
+
 ## Security boundary
 
 The server performs bounded reads only. It never creates temporary files,
