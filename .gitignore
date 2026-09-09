@@ -16,6 +16,7 @@ build/
 AGENTS.md
 .claude/
 .codex/
+.superpowers/
 _bmad/
 _bmad-output/
 .memlog.md
