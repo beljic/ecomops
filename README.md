@@ -69,6 +69,11 @@ dedicated SSH account/key with read-only permissions and host-key verification.
 A user who installs modified or malicious code, or grants write permissions to
 the SSH account, is outside this guarantee.
 
+EcomOps does not bootstrap SSH access. Never use `ssh-copy-id`, modify remote
+`authorized_keys`, or run remote setup commands for an EcomOps project. The
+configured key must already be authorized, and the remote account should
+already have the intended read-only permissions.
+
 All project names, domains, paths, and credentials shown in this repository are
 synthetic examples. Real customer or company details must never be committed.
 

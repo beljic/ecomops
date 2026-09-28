@@ -96,6 +96,12 @@ The `key_path` is required unless the MCP process can use an SSH agent or a
 default SSH key. Do not add `password` to the YAML file; it is rejected by the
 configuration schema.
 
+The key must already be authorized on the remote server. EcomOps never
+installs keys or changes SSH access. Do **not** run `ssh-copy-id`, edit
+`~/.ssh/authorized_keys`, use `ssh`, `sudo`, or any other remote setup command
+as part of EcomOps configuration. Those are administrative changes outside the
+read-only analyzer boundary.
+
 For a direct CLI run, password authentication can be requested explicitly:
 
 ```bash
