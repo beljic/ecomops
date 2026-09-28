@@ -45,6 +45,11 @@ Replace only the example paths. Keep project YAML files and SSH key paths
 outside this public repository. Full project configuration and security
 guidance is in [the MCP setup guide](docs/MCP.md).
 
+For remote projects, MCP uses an SSH key or SSH agent. It does not ask for or
+accept an SSH password. Password authentication is available only when using
+the direct CLI with the explicit `--prompt-password` option; see the [MCP
+setup guide](docs/MCP.md#ssh-authentication-mcp-vs-cli) for the distinction.
+
 ## Security and read-only guarantee
 
 EcomOps is designed to read logs only. The MCP interface does not expose a

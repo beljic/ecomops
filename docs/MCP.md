@@ -1,5 +1,10 @@
 # MCP setup
 
+> **Important authentication rule:** MCP remote projects require SSH key
+> authentication or an SSH agent. Password authentication is available only
+> for direct CLI runs with `--prompt-password`; the MCP server cannot prompt
+> for a password because its stdin is reserved for the MCP protocol.
+
 EcomOps exposes one typed MCP tool over stdio:
 
 ```text
@@ -35,6 +40,12 @@ After installing the package with `uv`, configure the MCP client to launch:
 
 The example path is synthetic. Use a directory outside the repository for
 private project configuration.
+
+After installing the MCP server, the project registry is initially empty.
+Create the directory configured by `ECOMOPS_PROJECTS_DIR` and add one YAML
+file per project. A successful `claude mcp get ecomops` only confirms that the
+MCP process starts; it does not confirm that a project YAML file or SSH
+credentials are configured.
 
 ## Project configuration
 
@@ -73,6 +84,18 @@ SSH passwords are not stored in project configuration. The SSH account should
 be dedicated to read-only log access and host-key verification must remain
 enabled.
 
+For MCP access, fill in all of these SSH fields:
+
+- `host`: DNS name or IP address;
+- `user`: SSH username;
+- `key_path`: private key readable by the local MCP process;
+- `known_hosts_path`: local known-hosts file used for host-key verification;
+- `root`: optional remote root for resolving relative log paths.
+
+The `key_path` is required unless the MCP process can use an SSH agent or a
+default SSH key. Do not add `password` to the YAML file; it is rejected by the
+configuration schema.
+
 For a direct CLI run, password authentication can be requested explicitly:
 
 ```bash
@@ -83,6 +106,10 @@ The password is read without echo, kept only in memory for that one SSH
 connection, and never written to YAML, environment files, logs, or temporary
 files. The MCP server does not accept passwords as tool arguments; configure
 its SSH projects with a key or SSH agent instead.
+
+If you only have an SSH username and password, the direct CLI command can be
+used, but the MCP integration will not be able to connect to that project until
+key authentication or an SSH agent is configured.
 
 ## Security boundary
 
