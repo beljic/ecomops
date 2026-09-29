@@ -202,18 +202,6 @@ def list_project_log_files(
         )
 
 
-def inspect_project_log(
-    project: str,
-    alias: str,
-    ssh_password: str | None = None,
-    ssh_username: str | None = None,
-) -> LogInspection:
-    """Report file health and parser recognition for one alias; no analyzers run."""
-    project_config = ProjectRegistry.load().get(project)
-    with _source(project_config, alias, ssh_password, ssh_username) as source:
-        return _inspect_alias(project_config, alias, source)
-
-
 def check_project(
     project: str,
     ssh_password: str | None = None,

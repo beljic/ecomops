@@ -253,21 +253,13 @@ class SSHLogSource:
         limits: ReadLimits,
         time_range: TimeRange,
     ) -> LogReadResult:
-        if self._password is None:
-            remote = self._client.read_tail(
-                alias.path,
-                max_lines=limits.max_lines,
-                max_bytes=limits.max_bytes,
-                timeout_seconds=limits.timeout_seconds,
-            )
-        else:
-            remote = self._client.read_tail(
-                alias.path,
-                max_lines=limits.max_lines,
-                max_bytes=limits.max_bytes,
-                timeout_seconds=limits.timeout_seconds,
-                password=self._password,
-            )
+        remote = self._client.read_tail(
+            alias.path,
+            max_lines=limits.max_lines,
+            max_bytes=limits.max_bytes,
+            timeout_seconds=limits.timeout_seconds,
+            **self._auth(),
+        )
         lines = [
             line.decode("utf-8", errors="replace")
             for line in remote.data.splitlines(keepends=True)

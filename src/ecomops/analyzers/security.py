@@ -13,8 +13,8 @@ from datetime import datetime
 from urllib.parse import unquote
 
 from ecomops.ai.redaction import redact_sensitive_text
+from ecomops.analyzers._counting import top_counts
 from ecomops.core.models import (
-    CountItem,
     LogEntry,
     SecurityIndicator,
     SecurityScan,
@@ -93,16 +93,7 @@ def scan_security(
         target = unquote(access.path or "").lower()
         sample = redact_sensitive_text(access.path or "-")[:MAX_SAMPLE_LENGTH]
 
-        matched = [
-            (indicator_id, title)
-            for indicator_id, title, pattern in _SCANNER_SIGNATURES
-            if pattern.search(target)
-        ]
-        if access.method is None:
-            matched.append(("request.malformed", "Malformed request line"))
-        elif access.method.upper() not in _STANDARD_METHODS:
-            matched.append(("request.unusual_method", "Unusual HTTP method"))
-        for indicator_id, title in matched:
+        for indicator_id, title in _matched_indicators(target, access.method):
             titles[indicator_id] = title
             evidence.setdefault(indicator_id, _Evidence()).add(
                 entry, access.client_ip, sample, max_samples
@@ -129,12 +120,26 @@ def scan_security(
             TorClassification(
                 status="checked",
                 matched_requests=sum(tor_ips.values()),
-                top_client_ips=_top(tor_ips, top_n),
+                top_client_ips=top_counts(tor_ips, top_n),
             )
             if tor_cidrs
             else TorClassification(status="unavailable")
         ),
     )
+
+
+def _matched_indicators(target: str, method: str | None) -> list[tuple[str, str]]:
+    """Scanner signatures and request-shape indicators matching one request."""
+    matched = [
+        (indicator_id, title)
+        for indicator_id, title, pattern in _SCANNER_SIGNATURES
+        if pattern.search(target)
+    ]
+    if method is None:
+        matched.append(("request.malformed", "Malformed request line"))
+    elif method.upper() not in _STANDARD_METHODS:
+        matched.append(("request.unusual_method", "Unusual HTTP method"))
+    return matched
 
 
 def _login_guessing(
@@ -172,16 +177,11 @@ def _indicator(
         id=indicator_id,
         title=title,
         count=item.count,
-        top_client_ips=_top(item.client_ips, top_n),
+        top_client_ips=top_counts(item.client_ips, top_n),
         samples=item.samples,
         first_seen=item.first_seen,
         last_seen=item.last_seen,
     )
-
-
-def _top(counter: Counter[str], top_n: int) -> list[CountItem]:
-    ordered = sorted(counter.items(), key=lambda pair: (-pair[1], pair[0]))
-    return [CountItem(value=value, count=count) for value, count in ordered[:top_n]]
 
 
 def _in_networks(

@@ -151,8 +151,3 @@ class ReadOnlyPolicy:
         )
 
     validate_glob_pattern = staticmethod(validate_glob_pattern)
-
-
-def validate_read_only_command(command: str) -> str:
-    """Reject the legacy raw-command interface in favor of fixed builders."""
-    raise ReadOnlyViolation("Raw SSH commands are not accepted in read-only mode")

@@ -150,7 +150,11 @@ def test_local_symlink_leaving_the_log_folders_is_refused(
 
     with pytest.raises(LogPathPolicyError, match="outside the allowed log folders"):
         services.analyze_project_log("example-shop", "app")
-    inspection = services.inspect_project_log("example-shop", "app")
+    inspection = next(
+        item
+        for item in services.check_project("example-shop").aliases
+        if item.alias == "app"
+    )
     assert inspection.parse_stats is None
     assert inspection.source_metadata.error is not None
     assert "outside the allowed log folders" in inspection.source_metadata.error

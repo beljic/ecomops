@@ -365,7 +365,11 @@ def test_inspection_reports_metadata_and_parser_recognition_without_findings(
     )
     use_project(monkeypatch, glob_project(tmp_path))
 
-    inspection = services.inspect_project_log("local-store", "transfer")
+    inspection = next(
+        item
+        for item in services.check_project("local-store").aliases
+        if item.alias == "transfer"
+    )
 
     assert inspection.alias == "transfer"
     assert inspection.log_type == "nginx"
@@ -388,7 +392,11 @@ def test_inspection_of_a_glob_without_matches_is_a_result_not_an_error(
     (tmp_path / "logs").mkdir()
     use_project(monkeypatch, glob_project(tmp_path))
 
-    inspection = services.inspect_project_log("local-store", "transfer")
+    inspection = next(
+        item
+        for item in services.check_project("local-store").aliases
+        if item.alias == "transfer"
+    )
 
     assert inspection.selected_path is None
     assert inspection.source_metadata.exists is False
@@ -403,7 +411,11 @@ def test_inspection_of_a_missing_exact_file_reports_it(
 
     use_project(monkeypatch, local_project(tmp_path / "missing.log"))
 
-    inspection = services.inspect_project_log("local-store", "php")
+    inspection = next(
+        item
+        for item in services.check_project("local-store").aliases
+        if item.alias == "php"
+    )
 
     assert inspection.selected_path == str(tmp_path / "missing.log")
     assert inspection.source_metadata.error == "file not found"

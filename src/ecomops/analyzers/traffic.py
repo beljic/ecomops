@@ -5,7 +5,8 @@ from collections.abc import Sequence
 from datetime import UTC
 
 from ecomops.ai.redaction import redact_sensitive_text
-from ecomops.core.models import CountItem, IpStatusCounts, LogEntry, TrafficSummary
+from ecomops.analyzers._counting import top_counts
+from ecomops.core.models import IpStatusCounts, LogEntry, TrafficSummary
 
 DEFAULT_TOP_N = 10
 MAX_TOP_N = 50
@@ -45,12 +46,12 @@ def summarize_traffic(
     return TrafficSummary(
         total_requests=sum(client_ips.values()),
         unique_client_ips=len(client_ips),
-        top_client_ips=_top(client_ips, top_n),
+        top_client_ips=top_counts(client_ips, top_n),
         status_counts=dict(sorted(statuses.items())),
-        top_paths=_top(paths, top_n),
-        top_user_agents=_top(agents, top_n),
+        top_paths=top_counts(paths, top_n),
+        top_user_agents=top_counts(agents, top_n),
         peak_requests_per_minute=max(minutes.values(), default=0),
-        busiest_minutes=_top(minutes, top_n),
+        busiest_minutes=top_counts(minutes, top_n),
         status_by_ip=_status_by_ip(statuses_by_ip, top_n),
     )
 
@@ -73,11 +74,6 @@ def _status_by_ip(
             )
     rows.sort(key=lambda row: (-row.error_requests, -row.total_requests, row.client_ip))
     return rows[:top_n]
-
-
-def _top(counter: Counter[str], top_n: int) -> list[CountItem]:
-    ordered = sorted(counter.items(), key=lambda item: (-item[1], item[0]))
-    return [CountItem(value=value, count=count) for value, count in ordered[:top_n]]
 
 
 def _clean(value: str) -> str:

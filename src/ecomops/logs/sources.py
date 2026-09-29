@@ -67,76 +67,92 @@ class LocalLogSource:
         path = Path(alias.path).expanduser()
         metadata = inspect_local_file(path)
         if not metadata.readable:
-            return LogReadResult(
-                entries=[],
-                line_count=0,
-                byte_count=0,
-                truncated=False,
-                source_metadata=metadata,
-            )
+            return _unreadable(metadata)
         try:
-            size = path.stat().st_size
-            byte_count = min(size, limits.max_bytes)
-            offset = 0 if time_range.start is None else size - byte_count
-            data = read_local_bytes(path, offset=offset, max_bytes=byte_count)
-            starts_mid_line = offset > 0 and read_local_bytes(
-                path, offset=offset - 1, max_bytes=1
-            ) not in (b"\n", b"\r")
+            window = _read_window(path, limits, from_end=time_range.start is not None)
         except OSError:
             # Rotated, deleted, or re-permissioned between the check and the read.
-            return LogReadResult(
-                entries=[],
-                line_count=0,
-                byte_count=0,
-                truncated=False,
-                source_metadata=metadata.model_copy(
+            return _unreadable(
+                metadata.model_copy(
                     update={
                         "readable": False,
                         "error": "file disappeared or became unreadable",
                     }
-                ),
+                )
             )
-        at_end = offset + len(data) >= size
-        lines = _complete_lines(data, starts_mid_line=starts_mid_line, at_end=at_end)
         parsed = parse_lines_with_stats(
-            lines, source=str(path), client_ip_source=alias.client_ip_source
+            window.lines, source=str(path), client_ip_source=alias.client_ip_source
         )
         entries = parsed.entries
-        if offset > 0:
+        if window.offset > 0:
             entries = [
                 entry.model_copy(update={"line_number": None}) for entry in entries
             ]
         sampled_range = time_range_of(entries)
         entries = filter_by_time(entries, time_range)
-        parse_stats = parsed.stats.model_copy(
-            update={"filtered_out_lines": len(parsed.entries) - len(entries)}
-        )
-
         truncated = (
-            len(data) < size
-            or len(entries) > limits.max_lines
-            or time_range.exact_selection
-        )
+            window.partial or len(entries) > limits.max_lines
+        ) or time_range.exact_selection
         entries = entries[: limits.max_lines]
-        actual_range = time_range_of(entries)
 
         return LogReadResult(
             entries=entries,
             line_count=len(entries),
-            byte_count=len(data),
+            byte_count=len(window.data),
             truncated=truncated,
-            actual_range=actual_range,
+            actual_range=time_range_of(entries),
             source_metadata=metadata,
-            parse_stats=parse_stats,
+            parse_stats=parsed.stats.model_copy(
+                update={"filtered_out_lines": len(parsed.entries) - len(entries)}
+            ),
             sampling=SamplingMetadata(
-                direction="head" if time_range.start is None else "tail",
+                direction="tail" if window.from_end else "head",
                 max_bytes=limits.max_bytes,
                 max_lines=limits.max_lines,
-                sampled_bytes=len(data),
-                complete_lines=len(lines),
+                sampled_bytes=len(window.data),
+                complete_lines=len(window.lines),
                 sampled_range=sampled_range,
             ),
         )
+
+
+@dataclass(frozen=True)
+class _Window:
+    """One bounded byte window of a local file, cut to complete lines."""
+
+    data: bytes
+    lines: list[str]
+    offset: int
+    from_end: bool
+    partial: bool
+
+
+def _read_window(path: Path, limits: ReadLimits, *, from_end: bool) -> _Window:
+    size = path.stat().st_size
+    byte_count = min(size, limits.max_bytes)
+    offset = size - byte_count if from_end else 0
+    data = read_local_bytes(path, offset=offset, max_bytes=byte_count)
+    starts_mid_line = offset > 0 and read_local_bytes(
+        path, offset=offset - 1, max_bytes=1
+    ) not in (b"\n", b"\r")
+    at_end = offset + len(data) >= size
+    return _Window(
+        data=data,
+        lines=_complete_lines(data, starts_mid_line=starts_mid_line, at_end=at_end),
+        offset=offset,
+        from_end=from_end,
+        partial=len(data) < size,
+    )
+
+
+def _unreadable(metadata: SourceMetadata) -> LogReadResult:
+    return LogReadResult(
+        entries=[],
+        line_count=0,
+        byte_count=0,
+        truncated=False,
+        source_metadata=metadata,
+    )
 
 
 def inspect_local_file(path: Path) -> SourceMetadata:

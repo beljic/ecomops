@@ -1,7 +1,7 @@
 import pytest
 
 from ecomops.core.exceptions import ReadOnlyViolation
-from ecomops.ssh.read_only import ReadOnlyPolicy, validate_read_only_command
+from ecomops.ssh.read_only import ReadOnlyPolicy
 
 
 @pytest.mark.parametrize(
@@ -43,28 +43,6 @@ def test_tail_bytes_command_rejects_invalid_byte_limits(max_bytes: int) -> None:
 def test_tail_bytes_command_rejects_command_shaped_paths() -> None:
     with pytest.raises(ReadOnlyViolation):
         ReadOnlyPolicy.build_tail_bytes_command("rm /var/log/app.log", 100)
-
-
-def test_raw_ssh_commands_are_not_accepted() -> None:
-    with pytest.raises(ReadOnlyViolation):
-        validate_read_only_command("tail --lines 100 -- /var/log/app.log")
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "rm /var/log/app.log",
-        "sudo tail /var/log/app.log",
-        "tail --lines 10 -- /var/log/app.log > /tmp/copy.log",
-        "tail --lines 10 -- /var/log/app.log | cat",
-        "tail --lines $(cat /tmp/lines) -- /var/log/app.log",
-        "./cleanup.sh",
-        "arbitrary-command /var/log/app.log",
-    ],
-)
-def test_legacy_raw_commands_are_rejected(command: str) -> None:
-    with pytest.raises(ReadOnlyViolation):
-        validate_read_only_command(command)
 
 
 @pytest.mark.parametrize(
