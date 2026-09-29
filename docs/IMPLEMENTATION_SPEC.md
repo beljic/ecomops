@@ -1100,3 +1100,29 @@ Do not build:
 - Magento admin/API integration
 
 Keep the first version practical and focused.
+
+## 26. Post-MVP Additions (Observability and Read-Only Analysis)
+
+This brief is historical intent. These later additions are implemented and
+documented in `docs/MCP.md` and `docs/ARCHITECTURE.md`, which take precedence:
+
+- read metadata on every analysis: file state, sampled window, parsed,
+  unparsed, and filtered counts, level and format counts, and warnings that
+  replace a misleading "No findings";
+- a closed log type set (`php`, `magento`, `nginx`, `mysql`, `mariadb`,
+  `cron`, `generic`) and parsing of the Nginx `combined` access format with a
+  per-alias `client_ip_source` policy;
+- a log path policy: aliases may only name log files inside allowed log
+  folders; system, secret, and configuration files are always refused;
+- glob aliases for rotated logs and `project <name> check` / `check_project`
+  / `list_log_files` for inspection without analysis;
+- `traffic_summary` and `security_scan` MCP tools with bounded, redacted,
+  structured output and local-only Tor CIDRs;
+- arbitrary relative time ranges (`30m`, `24h`, `2w`, `3mo`) and ISO dates;
+- CLI `--prompt-password` / `--password-stdin` and MCP password elicitation
+  (ask once, retry once, never store).
+
+The read-only rule is unchanged: SSH runs only a fixed bounded `tail` and a
+fixed `find` check or listing that never follows symlinks. No `sudo`,
+`ssh-copy-id`, `authorized_keys` edits, remote setup, SFTP, or arbitrary
+commands.

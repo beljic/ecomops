@@ -147,6 +147,7 @@ def test_resolves_relative_ssh_log_alias_path_against_remote_root() -> None:
                 "user": "readonly",
                 "root": "/srv/example/current",
             },
+            "log_dirs": ["../logs/example"],
             "log_aliases": {
                 "access": {
                     "path": "../logs/example/access.log",
@@ -207,3 +208,142 @@ connection:
 
     with pytest.raises(ConfigurationError, match="group- or world-writable"):
         ProjectRegistry.load(projects_dir)
+
+
+@pytest.mark.parametrize(
+    "log_type", ["php", "magento", "nginx", "mysql", "mariadb", "cron", "generic"]
+)
+def test_documented_log_types_are_accepted(log_type: str) -> None:
+    project = ProjectConfig.model_validate(
+        {
+            "name": "storefront",
+            "connection": {"type": "local", "root": "/srv/storefront"},
+            "log_aliases": {"app": {"path": "app.log", "type": log_type}},
+        }
+    )
+
+    assert project.log_aliases["app"].type == log_type
+
+
+def test_unknown_log_type_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="type"):
+        ProjectConfig.model_validate(
+            {
+                "name": "storefront",
+                "connection": {"type": "local", "root": "/srv/storefront"},
+                "log_aliases": {"app": {"path": "app.log", "type": "apache"}},
+            }
+        )
+
+
+def test_glob_alias_resolves_its_directory_and_pattern_under_the_root() -> None:
+    project = ProjectConfig.model_validate(
+        {
+            "name": "storefront",
+            "connection": {"type": "local", "root": "/srv/storefront"},
+            "log_aliases": {
+                "transfer": {"path": "var/log/transfer-*.log", "type": "nginx"}
+            },
+        }
+    )
+
+    assert project.log_aliases["transfer"].is_glob is True
+    assert project.resolve_log_glob("transfer") == (
+        Path("/srv/storefront/var/log"),
+        "transfer-*.log",
+    )
+
+
+def test_exact_alias_is_not_a_glob() -> None:
+    project = ProjectConfig.model_validate(
+        {
+            "name": "storefront",
+            "connection": {"type": "local", "root": "/srv/storefront"},
+            "log_aliases": {"php": {"path": "var/log/system.log", "type": "php"}},
+        }
+    )
+
+    assert project.log_aliases["php"].is_glob is False
+    with pytest.raises(ConfigurationError, match="not a glob"):
+        project.resolve_log_glob("php")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../other-shop/transfer-*.log",
+        "var/*/transfer.log",
+        "var/log/transfer-[0-9].log",
+        "var/log/**.log",
+    ],
+)
+def test_glob_alias_outside_root_or_with_unsafe_pattern_is_rejected(path: str) -> None:
+    with pytest.raises(ValidationError, match="glob|log path policy"):
+        ProjectConfig.model_validate(
+            {
+                "name": "storefront",
+                "connection": {"type": "local", "root": "/srv/storefront"},
+                "log_aliases": {"transfer": {"path": path, "type": "nginx"}},
+            }
+        )
+
+
+def test_ssh_glob_alias_without_root_is_limited_to_the_system_log_folder() -> None:
+    def ssh_project(path: str) -> ProjectConfig:
+        return ProjectConfig.model_validate(
+            {
+                "name": "production",
+                "connection": {
+                    "type": "ssh",
+                    "host": "logs.example.test",
+                    "user": "readonly",
+                },
+                "log_aliases": {"transfer": {"path": path, "type": "nginx"}},
+            }
+        )
+
+    assert ssh_project("/var/log/nginx/transfer-*.log")
+    with pytest.raises(ValidationError, match="log path policy"):
+        ssh_project("/srv/example-shop/var/log/transfer-*.log")
+
+
+def test_nginx_alias_accepts_a_client_ip_source_policy() -> None:
+    project = ProjectConfig.model_validate(
+        {
+            "name": "storefront",
+            "connection": {"type": "local", "root": "/srv/storefront"},
+            "log_aliases": {
+                "access": {
+                    "path": "access.log",
+                    "type": "nginx",
+                    "client_ip_source": "x_forwarded_for",
+                },
+                "plain": {"path": "plain.log", "type": "nginx"},
+            },
+        }
+    )
+
+    assert project.log_aliases["access"].client_ip_source == "x_forwarded_for"
+    assert project.log_aliases["plain"].client_ip_source == "socket"
+
+
+@pytest.mark.parametrize(
+    ("log_type", "policy"), [("php", "x_forwarded_for"), ("nginx", "header")]
+)
+def test_client_ip_source_is_rejected_outside_nginx_or_when_unknown(
+    log_type: str, policy: str
+) -> None:
+    with pytest.raises(ValidationError, match="client_ip_source"):
+        ProjectConfig.model_validate(
+            {
+                "name": "storefront",
+                "connection": {"type": "local", "root": "/srv/storefront"},
+                "log_aliases": {
+                    "app": {
+                        "path": "app.log",
+                        "type": log_type,
+                        "client_ip_source": policy,
+                    }
+                },
+            }
+        )

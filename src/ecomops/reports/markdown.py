@@ -1,6 +1,8 @@
 from ecomops.ai.redaction import redact_report
 from ecomops.core.models import AnalysisReport
 
+from .read_summary import read_summary_lines
+
 
 def render_markdown(report: AnalysisReport) -> str:
     """Render a report as a compact Markdown document."""
@@ -16,11 +18,15 @@ def render_markdown(report: AnalysisReport) -> str:
                 "",
             ]
         )
+    summary = read_summary_lines(report)
+    if summary:
+        lines.extend([*(f"- {line}" for line in summary), ""])
     if report.ai_enriched:
         lines.extend([f"- AI enrichment: `{report.ai_provider}`", ""])
     if not report.findings:
-        lines.append("No findings.")
-        return "\n".join(lines)
+        if not report.warnings:
+            lines.append("No findings.")
+        return "\n".join(lines).rstrip()
 
     lines.append("## Findings")
     lines.append("")

@@ -101,3 +101,88 @@ def test_legacy_raw_commands_are_rejected(command: str) -> None:
 def test_command_shaped_or_unsafe_paths_are_rejected(path: str) -> None:
     with pytest.raises(ReadOnlyViolation):
         ReadOnlyPolicy.validate_path(path)
+
+
+def test_file_check_command_does_not_follow_symlinks() -> None:
+    command = ReadOnlyPolicy.build_file_check_command("/var/log/store front/app.log")
+
+    assert command == (
+        "find '/var/log/store front/app.log' -maxdepth 0 -printf '%y %s %T@\\n'"
+    )
+
+
+def test_file_check_command_also_checks_parent_folders() -> None:
+    command = ReadOnlyPolicy.build_file_check_command(
+        "/srv/shop/var/log/app.log", ["/srv/shop/var", "/srv/shop/var/log"]
+    )
+
+    assert command == (
+        "find /srv/shop/var /srv/shop/var/log /srv/shop/var/log/app.log "
+        "-maxdepth 0 -printf '%y %s %T@\\n'"
+    )
+
+
+def test_file_check_command_bounds_the_number_of_parent_folders() -> None:
+    with pytest.raises(ReadOnlyViolation):
+        ReadOnlyPolicy.build_file_check_command(
+            "/a/app.log", [f"/a/{index}" for index in range(40)]
+        )
+
+
+@pytest.mark.parametrize(
+    "path", ["/var/log/app.log; rm -rf /", "var/log/app.log", "-delete"]
+)
+def test_file_check_command_rejects_unsafe_or_relative_paths(path: str) -> None:
+    with pytest.raises(ReadOnlyViolation):
+        ReadOnlyPolicy.build_file_check_command(path)
+
+
+def test_list_command_is_fixed_non_recursive_and_regular_files_only() -> None:
+    command = ReadOnlyPolicy.build_list_command(
+        "/srv/example-shop/var/log", "transfer-*.log"
+    )
+
+    assert command == (
+        "find /srv/example-shop/var/log -maxdepth 1 -type f "
+        "-name 'transfer-*.log' -printf '%T@ %s %f\\n'"
+    )
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        "var/log",
+        "-delete",
+        "/var/log; rm -rf /",
+        "/var/log $(id)",
+        "/var/log\n/etc",
+    ],
+)
+def test_list_command_rejects_unsafe_directories(directory: str) -> None:
+    with pytest.raises(ReadOnlyViolation):
+        ReadOnlyPolicy.build_list_command(directory, "transfer-*.log")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "",
+        "*/*.log",
+        "../*.log",
+        "..",
+        "transfer-*.log -delete",
+        "transfer-*.log;id",
+        "$(id)*.log",
+        "-exec",
+        "transfer-[0-9].log",
+        "**.log",
+    ],
+)
+def test_list_command_rejects_unsafe_patterns(pattern: str) -> None:
+    with pytest.raises(ReadOnlyViolation):
+        ReadOnlyPolicy.build_list_command("/var/log", pattern)
+
+
+@pytest.mark.parametrize("pattern", ["transfer-*.log", "system.log", "cron-?.log"])
+def test_glob_patterns_with_only_safe_characters_are_accepted(pattern: str) -> None:
+    assert ReadOnlyPolicy.validate_glob_pattern(pattern) == pattern

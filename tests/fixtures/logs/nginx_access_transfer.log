@@ -1,0 +1,5 @@
+203.0.113.10 - - [03/Sep/2026:12:00:00 +0000] "GET /checkout/cart/ HTTP/1.1" 200 5120 "https://shop.example.test/" "Mozilla/5.0 (X11; Linux x86_64)" "198.51.100.7, 203.0.113.10"
+203.0.113.10 - - [03/Sep/2026:12:00:30 +0000] "POST /customer/account/loginPost/ HTTP/1.1" 403 0 "-" "curl/8.5.0" "198.51.100.8"
+192.0.2.44 - - [03/Sep/2026:12:01:05 +0000] "GET /wp-admin/setup-config.php HTTP/1.1" 404 153 "-" "Mozilla/5.0 (compatible; ExampleScanner/1.0)" "-"
+192.0.2.45 - readonly [03/Sep/2026:12:01:10 +0200] "GET /catalog/product/view/id/42 HTTP/2.0" 429 - "-" "Mozilla/5.0"
+malformed line that is not an access log entry

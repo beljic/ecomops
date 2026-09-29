@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ecomops.config.schema import LogAliasConfig
-from ecomops.core.models import LogEntry, LogReadResult
+from ecomops.core.models import (
+    LogEntry,
+    LogReadResult,
+    SamplingMetadata,
+    SourceMetadata,
+)
 
-from .parsers import parse_lines
+from .inspection import LogFileListing, list_local_candidates
+from .parsers import parse_lines_with_stats
 from .readers import read_local_bytes
 from .time_ranges import TimeRange
 
@@ -29,6 +36,22 @@ class ReadLimits:
 
 
 class LocalLogSource:
+    def list_candidates(
+        self,
+        directory: Path,
+        pattern: str,
+        *,
+        timeout_seconds: int,
+        allowed_dirs: list[Path] | None = None,
+    ) -> LogFileListing:
+        """List glob candidates; ``timeout_seconds`` is unused for local reads."""
+        assert allowed_dirs is not None, "local listing needs the allowed log folders"
+        return list_local_candidates(directory, pattern, allowed_dirs)
+
+    def inspect(self, alias: LogAliasConfig, limits: ReadLimits) -> LogReadResult:
+        """Describe the file and parse a bounded head sample; no analyzers run."""
+        return self.read(alias, limits, TimeRange(start=None, end=None))
+
     def read(
         self,
         alias: LogAliasConfig,
@@ -36,21 +59,52 @@ class LocalLogSource:
         time_range: TimeRange,
     ) -> LogReadResult:
         path = Path(alias.path).expanduser()
-        size = path.stat().st_size
-        byte_count = min(size, limits.max_bytes)
-        offset = 0 if time_range.start is None else size - byte_count
-        data = read_local_bytes(path, offset=offset, max_bytes=byte_count)
+        metadata = inspect_local_file(path)
+        if not metadata.readable:
+            return LogReadResult(
+                entries=[],
+                line_count=0,
+                byte_count=0,
+                truncated=False,
+                source_metadata=metadata,
+            )
+        try:
+            size = path.stat().st_size
+            byte_count = min(size, limits.max_bytes)
+            offset = 0 if time_range.start is None else size - byte_count
+            data = read_local_bytes(path, offset=offset, max_bytes=byte_count)
+            starts_mid_line = offset > 0 and read_local_bytes(
+                path, offset=offset - 1, max_bytes=1
+            ) not in (b"\n", b"\r")
+        except OSError:
+            # Rotated, deleted, or re-permissioned between the check and the read.
+            return LogReadResult(
+                entries=[],
+                line_count=0,
+                byte_count=0,
+                truncated=False,
+                source_metadata=metadata.model_copy(
+                    update={
+                        "readable": False,
+                        "error": "file disappeared or became unreadable",
+                    }
+                ),
+            )
         at_end = offset + len(data) >= size
-        starts_mid_line = offset > 0 and read_local_bytes(
-            path, offset=offset - 1, max_bytes=1
-        ) not in (b"\n", b"\r")
         lines = _complete_lines(data, starts_mid_line=starts_mid_line, at_end=at_end)
-        entries = parse_lines(lines, source=str(path))
+        parsed = parse_lines_with_stats(
+            lines, source=str(path), client_ip_source=alias.client_ip_source
+        )
+        entries = parsed.entries
         if offset > 0:
             entries = [
                 entry.model_copy(update={"line_number": None}) for entry in entries
             ]
+        sampled_range = sampled_time_range(entries)
         entries = _filter_entries(entries, time_range=time_range)
+        parse_stats = parsed.stats.model_copy(
+            update={"filtered_out_lines": len(parsed.entries) - len(entries)}
+        )
 
         truncated = (
             len(data) < size
@@ -66,7 +120,63 @@ class LocalLogSource:
             byte_count=len(data),
             truncated=truncated,
             actual_range=actual_range,
+            source_metadata=metadata,
+            parse_stats=parse_stats,
+            sampling=SamplingMetadata(
+                direction="head" if time_range.start is None else "tail",
+                max_bytes=limits.max_bytes,
+                max_lines=limits.max_lines,
+                sampled_bytes=len(data),
+                complete_lines=len(lines),
+                sampled_range=sampled_range,
+            ),
         )
+
+
+def inspect_local_file(path: Path) -> SourceMetadata:
+    """Describe a local log with ``stat`` and a read-open check; never writes."""
+    try:
+        file_stat = path.stat()
+    except FileNotFoundError:
+        return SourceMetadata(exists=False, readable=False, error="file not found")
+    except PermissionError:
+        return SourceMetadata(exists=False, readable=False, error="permission denied")
+    except OSError:
+        return SourceMetadata(exists=False, readable=False, error="cannot access file")
+
+    modified_at = datetime.fromtimestamp(file_stat.st_mtime, tz=UTC)
+    if not stat.S_ISREG(file_stat.st_mode):
+        return SourceMetadata(
+            exists=True,
+            readable=False,
+            modified_at=modified_at,
+            error="not a regular file",
+        )
+    error: str | None = None
+    try:
+        with path.open("rb"):
+            pass
+    except PermissionError:
+        error = "permission denied"
+    except OSError:
+        error = "cannot open file"
+    return SourceMetadata(
+        exists=True,
+        readable=error is None,
+        size_bytes=file_stat.st_size,
+        modified_at=modified_at,
+        error=error,
+    )
+
+
+def sampled_time_range(entries: list[LogEntry]) -> TimeRange | None:
+    """Time range covered by every timestamped line in the sample, in UTC."""
+    timestamps = [
+        _as_utc(entry.timestamp) for entry in entries if entry.timestamp is not None
+    ]
+    if not timestamps:
+        return None
+    return TimeRange(start=min(timestamps), end=max(timestamps))
 
 
 def _complete_lines(data: bytes, *, starts_mid_line: bool, at_end: bool) -> list[str]:

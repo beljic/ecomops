@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import re
 from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+
+_RELATIVE = re.compile(r"^(?P<amount>\d+)(?P<unit>mo|m|h|d|w)$")
+_UNIT_DELTAS = {
+    "m": timedelta(minutes=1),
+    "h": timedelta(hours=1),
+    "d": timedelta(days=1),
+    "w": timedelta(weeks=1),
+}
 
 
 @dataclass(frozen=True)
@@ -19,19 +28,28 @@ class TimeRange:
         if normalized_value == "all":
             return cls(start=None, end=None)
 
-        relative_ranges = {"1h": timedelta(hours=1), "1d": timedelta(days=1)}
-        if normalized_value == "7d":
-            return cls(start=normalized_now - timedelta(days=7), end=normalized_now)
-        if normalized_value == "1mo":
-            return cls(start=_one_month_before(normalized_now), end=normalized_now)
-        if normalized_value in relative_ranges:
-            return cls(
-                start=normalized_now - relative_ranges[normalized_value],
-                end=normalized_now,
-            )
+        relative = _RELATIVE.fullmatch(normalized_value)
+        if relative is not None:
+            amount = int(relative["amount"])
+            if amount <= 0:
+                raise ValueError(
+                    f"Invalid time range: {value} (value must be positive)"
+                )
+            try:
+                if relative["unit"] == "mo":
+                    start = _months_before(normalized_now, amount)
+                else:
+                    start = normalized_now - amount * _UNIT_DELTAS[relative["unit"]]
+            except (OverflowError, ValueError) as error:
+                raise ValueError(
+                    f"Invalid time range: {value} (too far in the past)"
+                ) from error
+            return cls(start=start, end=normalized_now)
 
         try:
-            start = _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+            start = _as_utc(
+                datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            )
         except ValueError as error:
             raise ValueError(f"Invalid time range: {value}") from error
 
@@ -44,8 +62,10 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _one_month_before(value: datetime) -> datetime:
-    month = value.month - 1 or 12
-    year = value.year - 1 if value.month == 1 else value.year
+def _months_before(value: datetime, months: int) -> datetime:
+    """Step back whole calendar months, clamping to the target month's last day."""
+    month_index = value.year * 12 + (value.month - 1) - months
+    year, month = divmod(month_index, 12)
+    month += 1
     day = min(value.day, monthrange(year, month)[1])
     return value.replace(year=year, month=month, day=day)

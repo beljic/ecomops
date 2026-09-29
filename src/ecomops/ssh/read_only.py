@@ -1,4 +1,6 @@
+import re
 import shlex
+from collections.abc import Sequence
 
 from ecomops.core.exceptions import ReadOnlyViolation
 
@@ -35,6 +37,9 @@ _MUTATING_OR_PRIVILEGED_COMMANDS = frozenset(
 )
 _SCRIPT_SUFFIXES = (".bash", ".fish", ".pl", ".py", ".rb", ".sh", ".zsh")
 MAX_READ_LINES = 50_000
+MAX_LIST_ENTRIES = 1_000
+MAX_CHECKED_PARENTS = 32
+_GLOB_PATTERN = re.compile(r"^[A-Za-z0-9._*?-]+$")
 
 
 def _contains_shell_operator(value: str) -> bool:
@@ -57,6 +62,22 @@ def _looks_like_command(path: str) -> bool:
     return bool(
         any(character.isspace() for character in path) and "/" not in first_word
     )
+
+
+def validate_glob_pattern(pattern: str) -> str:
+    """Accept a single file-name pattern using only ``*`` and ``?`` wildcards."""
+    if (
+        not isinstance(pattern, str)
+        or not _GLOB_PATTERN.fullmatch(pattern)
+        or pattern in {".", ".."}
+        or pattern.startswith("-")
+        or "**" in pattern
+    ):
+        raise ReadOnlyViolation(
+            "Glob patterns may only use letters, digits, '.', '_', '-', '*' and '?' "
+            "in a single file name"
+        )
+    return pattern
 
 
 class ReadOnlyPolicy:
@@ -92,6 +113,44 @@ class ReadOnlyPolicy:
             raise ValueError("max_bytes must be a positive integer")
         validated_path = ReadOnlyPolicy.validate_path(path)
         return f"tail -c {max_bytes} -- {shlex.quote(validated_path)}"
+
+    @staticmethod
+    def build_file_check_command(path: str, parents: Sequence[str] = ()) -> str:
+        """Build the fixed type/metadata check for a resolved path and its parents.
+
+        ``find`` without ``-L`` never follows symlinks; ``%y`` prints each start
+        point's own type (``f`` file, ``d`` folder, ``l`` symlink), in argument
+        order, so the caller can refuse a symlinked file or parent folder.
+        All paths must be absolute so none can parse as an option.
+        """
+        if len(parents) > MAX_CHECKED_PARENTS:
+            raise ReadOnlyViolation("Too many parent folders to check")
+        quoted: list[str] = []
+        for candidate in (*parents, path):
+            validated = ReadOnlyPolicy.validate_path(candidate)
+            if not validated.startswith("/"):
+                raise ReadOnlyViolation("File check paths must be absolute")
+            quoted.append(shlex.quote(validated))
+        return f"find {' '.join(quoted)} -maxdepth 0 -printf '%y %s %T@\\n'"
+
+    @staticmethod
+    def build_list_command(directory: str, pattern: str) -> str:
+        """Build a non-recursive, regular-file-only listing of one directory.
+
+        ``find`` is limited to ``-maxdepth 1 -type f -name <pattern> -printf``;
+        no action primaries (``-exec``, ``-delete``, ``-fprint``) are ever
+        emitted. The directory must be absolute so it cannot parse as an option.
+        """
+        validated_directory = ReadOnlyPolicy.validate_path(directory)
+        if not validated_directory.startswith("/"):
+            raise ReadOnlyViolation("Listing directory must be an absolute path")
+        validated_pattern = ReadOnlyPolicy.validate_glob_pattern(pattern)
+        return (
+            f"find {shlex.quote(validated_directory)} -maxdepth 1 -type f "
+            f"-name {shlex.quote(validated_pattern)} -printf '%T@ %s %f\\n'"
+        )
+
+    validate_glob_pattern = staticmethod(validate_glob_pattern)
 
 
 def validate_read_only_command(command: str) -> str:

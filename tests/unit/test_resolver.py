@@ -1,9 +1,15 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from ecomops.config.schema import ProjectConfig
-from ecomops.core.exceptions import LogAliasNotFoundError, ProjectNotFoundError
+from ecomops.core.exceptions import (
+    ConfigurationError,
+    LogAliasNotFoundError,
+    LogFileNotFoundError,
+    ProjectNotFoundError,
+)
 from ecomops.core.models import LogEntry, LogReadResult
 from ecomops.logs.time_ranges import TimeRange
 
@@ -136,7 +142,9 @@ def test_service_rejects_an_explicit_zero_line_limit(
         ProjectRegistry,
         "load",
         classmethod(
-            lambda cls: ProjectRegistry({"local-store": local_project(tmp_path / "x")})
+            lambda cls: ProjectRegistry(
+                {"local-store": local_project(tmp_path / "x.log")}
+            )
         ),
     )
     monkeypatch.setattr(services, "resolve_source", lambda *args: object())
@@ -155,7 +163,9 @@ def test_service_rejects_missing_alias_before_source_read(
         ProjectRegistry,
         "load",
         classmethod(
-            lambda cls: ProjectRegistry({"local-store": local_project(tmp_path / "x")})
+            lambda cls: ProjectRegistry(
+                {"local-store": local_project(tmp_path / "x.log")}
+            )
         ),
     )
 
@@ -201,3 +211,193 @@ def test_service_includes_ssh_read_metadata_in_report(
     assert report.line_count == 1
     assert report.byte_count == 20
     assert report.truncated is True
+
+
+def test_service_report_explains_a_missing_local_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.config.projects import ProjectRegistry
+    from ecomops.core import services
+
+    project = local_project(tmp_path / "missing.log")
+    monkeypatch.setattr(
+        ProjectRegistry,
+        "load",
+        classmethod(lambda cls: ProjectRegistry({project.name: project})),
+    )
+
+    report = services.analyze_project_log(project.name, "php")
+
+    assert report.findings == []
+    assert report.source_metadata is not None
+    assert report.source_metadata.error == "file not found"
+    assert report.warnings == ["source unavailable: file not found"]
+
+
+def test_service_report_carries_parse_stats_sampling_and_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.config.projects import ProjectRegistry
+    from ecomops.core import services
+
+    log_path = tmp_path / "php.log"
+    log_path.write_text("[2026-09-03 10:00:00] ERROR: boom\nloose\n", "utf-8")
+    project = local_project(log_path)
+    monkeypatch.setattr(
+        ProjectRegistry,
+        "load",
+        classmethod(lambda cls: ProjectRegistry({project.name: project})),
+    )
+
+    report = services.analyze_project_log(project.name, "php")
+
+    assert report.parse_stats is not None
+    assert report.parse_stats.parsed_lines == 1
+    assert report.parse_stats.unparsed_lines == 1
+    assert report.sampling is not None
+    assert report.sampling.direction == "head"
+    assert report.actual_range is not None
+
+
+def glob_project(root: Path) -> ProjectConfig:
+    return ProjectConfig.model_validate(
+        {
+            "name": "local-store",
+            "connection": {"type": "local", "root": str(root)},
+            "log_aliases": {
+                "transfer": {"path": "logs/transfer-*.log", "type": "nginx"}
+            },
+        }
+    )
+
+
+def use_project(monkeypatch: pytest.MonkeyPatch, project: ProjectConfig) -> None:
+    from ecomops.config.projects import ProjectRegistry
+
+    monkeypatch.setattr(
+        ProjectRegistry,
+        "load",
+        classmethod(lambda cls: ProjectRegistry({project.name: project})),
+    )
+
+
+def write_log(path: Path, content: str, mtime: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    os.utime(path, (mtime, mtime))
+
+
+def test_glob_alias_analysis_reads_the_newest_matching_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    write_log(tmp_path / "logs/transfer-old.log", "old entry\n", 1_000)
+    write_log(tmp_path / "logs/transfer-new.log", "new entry\n", 2_000)
+    write_log(tmp_path / "logs/other-newest.log", "not matched\n", 3_000)
+    use_project(monkeypatch, glob_project(tmp_path))
+
+    report = services.analyze_project_log("local-store", "transfer")
+
+    assert report.source.path == str(tmp_path / "logs/transfer-new.log")
+    assert report.byte_count == len("new entry\n")
+
+
+def test_glob_alias_analysis_without_matches_raises_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    (tmp_path / "logs").mkdir()
+    use_project(monkeypatch, glob_project(tmp_path))
+
+    with pytest.raises(LogFileNotFoundError, match="transfer-\\*.log"):
+        services.analyze_project_log("local-store", "transfer")
+
+
+def test_local_listing_excludes_symlinks_and_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    outside = tmp_path / "outside.log"
+    write_log(outside, "outside\n", 5_000)
+    write_log(tmp_path / "root/logs/transfer-a.log", "inside\n", 1_000)
+    (tmp_path / "root/logs/transfer-link.log").symlink_to(outside)
+    (tmp_path / "root/logs/transfer-dir.log").mkdir()
+    use_project(monkeypatch, glob_project(tmp_path / "root"))
+
+    listing = services.list_project_log_files("local-store", "transfer")
+
+    assert [candidate.path for candidate in listing.files] == [
+        str(tmp_path / "root/logs/transfer-a.log")
+    ]
+    assert listing.pattern == "transfer-*.log"
+    assert listing.files[0].size_bytes == len("inside\n")
+
+
+def test_listing_an_exact_alias_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    use_project(monkeypatch, local_project(tmp_path / "system.log"))
+
+    with pytest.raises(ConfigurationError, match="not a glob"):
+        services.list_project_log_files("local-store", "php")
+
+
+def test_inspection_reports_metadata_and_parser_recognition_without_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    write_log(
+        tmp_path / "logs/transfer-a.log",
+        "[2026-09-03 10:00:00] ERROR: boom\nunstructured\n",
+        1_000,
+    )
+    use_project(monkeypatch, glob_project(tmp_path))
+
+    inspection = services.inspect_project_log("local-store", "transfer")
+
+    assert inspection.alias == "transfer"
+    assert inspection.log_type == "nginx"
+    assert inspection.connection_type == "local"
+    assert inspection.selected_path == str(tmp_path / "logs/transfer-a.log")
+    assert inspection.listing is not None
+    assert len(inspection.listing.files) == 1
+    assert inspection.source_metadata.readable is True
+    assert inspection.parse_stats is not None
+    assert inspection.parse_stats.parsed_lines == 1
+    assert inspection.parse_stats.unparsed_lines == 1
+    assert not hasattr(inspection, "findings")
+
+
+def test_inspection_of_a_glob_without_matches_is_a_result_not_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    (tmp_path / "logs").mkdir()
+    use_project(monkeypatch, glob_project(tmp_path))
+
+    inspection = services.inspect_project_log("local-store", "transfer")
+
+    assert inspection.selected_path is None
+    assert inspection.source_metadata.exists is False
+    assert inspection.source_metadata.error == "no files match transfer-*.log"
+    assert inspection.warnings == ["source unavailable: no files match transfer-*.log"]
+
+
+def test_inspection_of_a_missing_exact_file_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core import services
+
+    use_project(monkeypatch, local_project(tmp_path / "missing.log"))
+
+    inspection = services.inspect_project_log("local-store", "php")
+
+    assert inspection.selected_path == str(tmp_path / "missing.log")
+    assert inspection.source_metadata.error == "file not found"

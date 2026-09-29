@@ -3,9 +3,10 @@ from __future__ import annotations
 import importlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol, cast
+from datetime import UTC, datetime
+from typing import Literal, Protocol, cast
 
 from ecomops.config.loader import validate_file_permissions
 from ecomops.config.schema import SSHConnectionConfig
@@ -15,10 +16,13 @@ from ecomops.core.exceptions import (
     SSHTransportError,
 )
 
-from .read_only import MAX_READ_LINES, ReadOnlyPolicy
+from .read_only import MAX_LIST_ENTRIES, MAX_READ_LINES, ReadOnlyPolicy
 
 _LOGGER = logging.getLogger(__name__)
 _RECV_CHUNK_SIZE = 64
+_STAT_MAX_BYTES = 256
+_STDERR_MAX_BYTES = 512
+_LIST_ENTRY_MAX_BYTES = 512
 
 
 @dataclass(frozen=True)
@@ -28,12 +32,57 @@ class RemoteReadResult:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class RemoteFileStat:
+    size_bytes: int
+    modified_at: datetime
+    is_regular_file: bool
+    is_directory: bool = False
+
+
+@dataclass(frozen=True)
+class RemoteFileEntry:
+    name: str
+    size_bytes: int
+    modified_at: datetime
+
+
+@dataclass(frozen=True)
+class RemoteListing:
+    entries: list[RemoteFileEntry]
+    truncated: bool
+
+
+FailureReason = Literal["not_found", "permission_denied", "unknown"]
+
+
+class RemoteCommandFailedError(SSHTransportError):
+    """Raised when the fixed remote command exits with a non-zero status.
+
+    ``reason`` is classified from the command's error output, which itself is
+    never returned or logged (it can contain remote paths).
+    """
+
+    def __init__(self, message: str, *, reason: FailureReason = "unknown") -> None:
+        super().__init__(message)
+        self.reason: FailureReason = reason
+
+
+@dataclass(frozen=True)
+class RemoteFileMissing:
+    """A file check that failed, with the classified reason."""
+
+    reason: FailureReason
+
+
 class _Channel(Protocol):
     def settimeout(self, timeout: float) -> None: ...
 
     def exec_command(self, command: str) -> None: ...
 
     def recv(self, size: int) -> bytes: ...
+
+    def recv_stderr(self, size: int) -> bytes: ...
 
     def exit_status_ready(self) -> bool: ...
 
@@ -99,6 +148,79 @@ class ParamikoSSHClient:
             raise ValueError("timeout_seconds must be greater than zero")
 
         command = ReadOnlyPolicy.build_tail_bytes_command(path, max_bytes)
+        return self._execute(
+            command,
+            max_lines=max_lines,
+            max_bytes=max_bytes,
+            timeout_seconds=timeout_seconds,
+            password=password,
+            failure_message="Remote tail command failed",
+        )
+
+    def stat_file(
+        self,
+        path: str,
+        *,
+        timeout_seconds: int,
+        password: str | None = None,
+        parents: Sequence[str] = (),
+    ) -> RemoteFileStat | RemoteFileMissing:
+        """Return metadata without following symlinks, or why it is unavailable.
+
+        ``parents`` are folders between the allowed log folder and ``path``;
+        if any of them, or ``path`` itself, is a symlink, the result has
+        ``is_regular_file=False`` and ``is_directory=False``.
+        """
+        command = ReadOnlyPolicy.build_file_check_command(path, parents)
+        try:
+            result = self._execute(
+                command,
+                max_lines=len(parents) + 1,
+                max_bytes=_STAT_MAX_BYTES * (len(parents) + 1),
+                timeout_seconds=timeout_seconds,
+                password=password,
+                failure_message="Remote file check command failed",
+            )
+        except RemoteCommandFailedError as error:
+            return RemoteFileMissing(reason=error.reason)
+        return _parse_stat(result.data, expected_lines=len(parents) + 1)
+
+    def list_files(
+        self,
+        directory: str,
+        pattern: str,
+        *,
+        timeout_seconds: int,
+        password: str | None = None,
+    ) -> RemoteListing:
+        """List regular files matching ``pattern`` directly inside ``directory``."""
+        command = ReadOnlyPolicy.build_list_command(directory, pattern)
+        result = self._execute(
+            command,
+            max_lines=MAX_LIST_ENTRIES,
+            max_bytes=MAX_LIST_ENTRIES * _LIST_ENTRY_MAX_BYTES,
+            timeout_seconds=timeout_seconds,
+            password=password,
+            failure_message="Remote listing command failed",
+        )
+        entries = [
+            entry
+            for line in result.data.splitlines()
+            if (entry := _parse_listing_line(line)) is not None
+        ]
+        return RemoteListing(entries=entries, truncated=result.truncated)
+
+    def _execute(
+        self,
+        command: str,
+        *,
+        max_lines: int,
+        max_bytes: int,
+        timeout_seconds: int,
+        password: str | None,
+        failure_message: str,
+    ) -> RemoteReadResult:
+        """Run one command built by ``ReadOnlyPolicy`` over a fresh channel."""
         deadline = self._monotonic() + timeout_seconds
         client: _SSHClient | None = None
         channel: _Channel | None = None
@@ -131,6 +253,7 @@ class ParamikoSSHClient:
                 max_bytes=max_bytes,
                 deadline=deadline,
                 monotonic=self._monotonic,
+                failure_message=failure_message,
             )
         except (ConfigurationError, SSHTransportError):
             raise
@@ -199,6 +322,7 @@ def _read_bounded_channel(
     max_bytes: int,
     deadline: float,
     monotonic: Callable[[], float],
+    failure_message: str,
 ) -> RemoteReadResult:
     chunks: list[bytes] = []
     byte_count = 0
@@ -221,7 +345,9 @@ def _read_bounded_channel(
         if not chunk:
             completed = True
             if channel.exit_status_ready() and channel.recv_exit_status() != 0:
-                raise SSHTransportError("Remote tail command failed")
+                raise RemoteCommandFailedError(
+                    failure_message, reason=_failure_reason(channel)
+                )
             break
 
         chunks.append(chunk)
@@ -245,3 +371,66 @@ def _read_bounded_channel(
     return RemoteReadResult(
         data=b"".join(lines), byte_count=byte_count, truncated=truncated
     )
+
+
+def _failure_reason(channel: _Channel) -> FailureReason:
+    """Classify a failed command from at most ``_STDERR_MAX_BYTES`` of stderr."""
+    stderr = b""
+    try:
+        while len(stderr) < _STDERR_MAX_BYTES:
+            chunk = channel.recv_stderr(_STDERR_MAX_BYTES - len(stderr))
+            if not chunk:
+                break
+            stderr += chunk
+    except (TimeoutError, OSError):
+        return "unknown"
+    if b"Permission denied" in stderr:
+        return "permission_denied"
+    if b"No such file or directory" in stderr:
+        return "not_found"
+    return "unknown"
+
+
+def _parse_stat(data: bytes, *, expected_lines: int) -> RemoteFileStat:
+    refused = RemoteFileStat(
+        size_bytes=0,
+        modified_at=datetime.fromtimestamp(0, tz=UTC),
+        is_regular_file=False,
+    )
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if len(lines) != expected_lines:
+        return refused
+    rows = [line.split(" ") for line in lines]
+    if any(len(row) != 3 for row in rows):
+        return refused
+    if any(row[0] != "d" for row in rows[:-1]):
+        return refused
+    file_type, size, mtime = rows[-1]
+    if file_type not in {"f", "d"}:
+        return refused
+    try:
+        return RemoteFileStat(
+            size_bytes=int(size),
+            modified_at=datetime.fromtimestamp(float(mtime), tz=UTC),
+            is_regular_file=file_type == "f",
+            is_directory=file_type == "d",
+        )
+    except ValueError:
+        return refused
+
+
+def _parse_listing_line(line: bytes) -> RemoteFileEntry | None:
+    parts = line.decode("utf-8", errors="replace").split(" ", 2)
+    if len(parts) != 3:
+        return None
+    mtime, size, name = parts
+    if not name or "/" in name or any(ord(char) < 32 for char in name):
+        return None
+    try:
+        return RemoteFileEntry(
+            name=name,
+            size_bytes=int(size),
+            modified_at=datetime.fromtimestamp(float(mtime), tz=UTC),
+        )
+    except ValueError:
+        return None

@@ -24,3 +24,11 @@ class ProjectNotFoundError(ConfigurationError):
 
 class LogAliasNotFoundError(ConfigurationError):
     """Raised when a requested log alias is not configured for a project."""
+
+
+class LogFileNotFoundError(ConfigurationError):
+    """Raised when a configured glob alias matches no log file."""
+
+
+class LogPathPolicyError(ConfigurationError):
+    """Raised when a resolved path is not an allowed log file."""

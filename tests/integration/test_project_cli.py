@@ -235,3 +235,180 @@ def test_project_cli_renders_expected_errors_without_tracebacks(
     assert result.exit_code == 1
     assert expected_error in result.output
     assert "Traceback" not in result.output
+
+
+def write_remote_project(projects_dir: Path) -> None:
+    (projects_dir / "remote.yaml").write_text(
+        """
+name: remote
+connection:
+  type: ssh
+  host: logs.example.test
+  user: readonly
+log_aliases:
+  access:
+    path: /var/log/access.log
+    type: nginx
+""",
+        encoding="utf-8",
+    )
+
+
+def capture_password(
+    monkeypatch: pytest.MonkeyPatch, received: dict[str, object]
+) -> None:
+    cli_module = importlib.import_module("ecomops.cli.app")
+
+    def fake_analyze_project_log(
+        project: str, alias: str, **kwargs: object
+    ) -> AnalysisReport:
+        received["password"] = kwargs["ssh_password"]
+        return AnalysisReport(
+            source=LogSource(type="ssh", project=project, alias=alias),
+            findings=[],
+            generated_at=datetime(2026, 9, 9, tzinfo=UTC),
+            connection_type="ssh",
+            remote_access=True,
+        )
+
+    def must_not_prompt(prompt: str) -> str:
+        raise AssertionError("--password-stdin must not prompt")
+
+    monkeypatch.setattr(cli_module, "analyze_project_log", fake_analyze_project_log)
+    monkeypatch.setattr(cli_module, "getpass", must_not_prompt)
+
+
+@pytest.mark.parametrize(
+    ("stdin", "expected"),
+    [
+        ("s3cret-value\n", "s3cret-value"),
+        ("s3cret-value\r\n", "s3cret-value"),
+        ("s3cret-value", "s3cret-value"),
+        ("  spaced secret \n\n", "  spaced secret \n"),
+    ],
+)
+def test_password_stdin_strips_only_one_trailing_newline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdin: str, expected: str
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    write_remote_project(projects_dir)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+    received: dict[str, object] = {}
+    capture_password(monkeypatch, received)
+
+    result = CliRunner().invoke(
+        app,
+        ["project", "remote", "analyze", "access", "--password-stdin"],
+        input=stdin,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert received == {"password": expected}
+    assert "s3cret" not in result.output
+
+
+def test_password_stdin_and_prompt_password_are_mutually_exclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    write_remote_project(projects_dir)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+    received: dict[str, object] = {}
+    capture_password(monkeypatch, received)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "project",
+            "remote",
+            "analyze",
+            "access",
+            "--password-stdin",
+            "--prompt-password",
+        ],
+        input="s3cret-value\n",
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --password-stdin or --prompt-password" in result.output
+    assert "s3cret" not in result.output
+    assert received == {}
+
+
+def test_empty_password_stdin_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    write_remote_project(projects_dir)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+    received: dict[str, object] = {}
+    capture_password(monkeypatch, received)
+
+    result = CliRunner().invoke(
+        app,
+        ["project", "remote", "analyze", "access", "--password-stdin"],
+        input="\n",
+    )
+
+    assert result.exit_code != 0
+    assert "empty" in result.output
+    assert received == {}
+
+
+def test_password_stdin_is_rejected_for_local_projects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    log_path = tmp_path / "system.log"
+    log_path.write_text("", encoding="utf-8")
+    write_project_config(projects_dir, log_path)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+
+    result = CliRunner().invoke(
+        app,
+        ["project", "local-store", "analyze", "php", "--password-stdin"],
+        input="s3cret-value\n",
+    )
+
+    assert result.exit_code != 0
+    assert "only valid for SSH projects" in result.output
+    assert "s3cret" not in result.output
+
+
+def test_stdin_password_never_appears_in_authentication_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomops.core.exceptions import SSHPermissionDeniedError
+
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    write_remote_project(projects_dir)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+    cli_module = importlib.import_module("ecomops.cli.app")
+
+    def deny(*args: object, **kwargs: object) -> AnalysisReport:
+        raise SSHPermissionDeniedError("SSH permission denied")
+
+    monkeypatch.setattr(cli_module, "analyze_project_log", deny)
+
+    result = CliRunner().invoke(
+        app,
+        ["project", "remote", "analyze", "access", "--password-stdin"],
+        input="s3cret-value\n",
+    )
+
+    assert result.exit_code == 1
+    assert "SSH permission denied" in result.output
+    assert "s3cret" not in result.output
+    assert result.exception is None or "s3cret" not in repr(result.exception)
+
+
+def test_password_options_are_visible_in_help() -> None:
+    result = CliRunner().invoke(app, ["project", "--help"])
+
+    assert "--prompt-password" in result.output
+    assert "--password-stdin" in result.output

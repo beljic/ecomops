@@ -43,7 +43,66 @@ def test_hour_range_crosses_midnight() -> None:
     assert result.start == datetime(2026, 9, 2, 23, 15, tzinfo=UTC)
 
 
-@pytest.mark.parametrize("value", ["", "0h", "-1h", "2h", "tomorrow"])
+@pytest.mark.parametrize(
+    "value",
+    ["", "0h", "-1h", "tomorrow", "1.5h", "h", "10x", "1 h", "01mo0", "2026-13-01"],
+)
 def test_invalid_ranges_are_rejected(value: str) -> None:
+    with pytest.raises(ValueError, match="time range"):
+        TimeRange.parse(value, now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_start"),
+    [
+        ("30m", datetime(2026, 9, 3, 12, 0, tzinfo=UTC)),
+        ("90m", datetime(2026, 9, 3, 11, 0, tzinfo=UTC)),
+        ("2h", datetime(2026, 9, 3, 10, 30, tzinfo=UTC)),
+        ("24h", datetime(2026, 9, 2, 12, 30, tzinfo=UTC)),
+        ("30d", datetime(2026, 8, 4, 12, 30, tzinfo=UTC)),
+        ("2w", datetime(2026, 8, 20, 12, 30, tzinfo=UTC)),
+        ("3mo", datetime(2026, 6, 3, 12, 30, tzinfo=UTC)),
+        ("12mo", datetime(2025, 9, 3, 12, 30, tzinfo=UTC)),
+        ("14mo", datetime(2025, 7, 3, 12, 30, tzinfo=UTC)),
+        ("2H", datetime(2026, 9, 3, 10, 30, tzinfo=UTC)),
+    ],
+)
+def test_arbitrary_positive_relative_ranges(
+    value: str, expected_start: datetime
+) -> None:
+    result = TimeRange.parse(value, now=NOW)
+
+    assert result.start == expected_start
+    assert result.end == NOW
+    assert result.exact_selection is False
+
+
+def test_month_range_clamps_to_the_last_day_of_a_shorter_month() -> None:
+    result = TimeRange.parse("1mo", now=datetime(2026, 3, 31, 8, 0, tzinfo=UTC))
+
+    assert result.start == datetime(2026, 2, 28, 8, 0, tzinfo=UTC)
+
+
+def test_iso_date_is_midnight_utc() -> None:
+    result = TimeRange.parse("2026-09-01", now=NOW)
+
+    assert result.start == datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
+    assert result.exact_selection is True
+
+
+def test_iso_timestamp_with_z_suffix() -> None:
+    result = TimeRange.parse("2026-09-01T00:00:00Z", now=NOW)
+
+    assert result.start == datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value", ["0m", "0mo"])
+def test_zero_relative_ranges_say_the_value_must_be_positive(value: str) -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        TimeRange.parse(value, now=NOW)
+
+
+@pytest.mark.parametrize("value", ["99999999999d", "999999999mo"])
+def test_relative_ranges_beyond_the_calendar_are_rejected_cleanly(value: str) -> None:
     with pytest.raises(ValueError, match="time range"):
         TimeRange.parse(value, now=NOW)
