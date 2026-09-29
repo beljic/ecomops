@@ -307,3 +307,42 @@ async def test_invalid_form_answers_never_echo_the_submitted_values(
     assert result.is_error is True
     assert "77819931" not in result_text(result)
     assert len(service.calls) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "request_state",
+    ["ecomops:ssh-credentials-requested", "ecomops:ssh-credentials:forged"],
+)
+async def test_credentials_offered_without_a_real_denial_never_reach_ssh(
+    monkeypatch: pytest.MonkeyPatch, request_state: str
+) -> None:
+    """The SDK seals request_state and binds it to this tool and arguments.
+
+    A client cannot pre-seed credentials: an unsealed or forged state is
+    rejected before EcomOps code runs, so the password is never used.
+    """
+    import mcp.types as types
+    from mcp import Client
+    from mcp.shared.exceptions import MCPError
+
+    from ecomops.mcp import server
+
+    service = FakeService()
+    monkeypatch.setattr(server, "analyze_project_log", service)
+
+    async with Client(server.mcp) as client:
+        with pytest.raises(MCPError, match="requestState"):
+            await client.call_tool(
+                "analyze_project_log",
+                {"project": "remote", "log_alias": "access"},
+                input_responses={
+                    "ssh_credentials": types.ElicitResult(
+                        action="accept",
+                        content={"username": "log-reader", "password": SECRET},
+                    )
+                },
+                request_state=request_state,
+            )
+
+    assert service.calls == []
