@@ -1,4 +1,5 @@
 import importlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -412,3 +413,93 @@ def test_password_options_are_visible_in_help() -> None:
 
     assert "--prompt-password" in result.output
     assert "--password-stdin" in result.output
+
+
+ACCESS_LOG = (
+    '192.0.2.44 - - [03/Sep/2026:12:01:05 +0000] "GET /wp-admin/setup.php HTTP/1.1" '
+    '404 153 "-" "ExampleScanner/1.0"\n'
+    '203.0.113.10 - - [03/Sep/2026:12:01:06 +0000] "POST /customer/account/loginPost/ '
+    'HTTP/1.1" 403 0 "-" "curl/8.5.0"\n'
+    '203.0.113.10 - - [03/Sep/2026:12:01:07 +0000] "GET /checkout HTTP/1.1" '
+    '200 10 "-" "Mozilla/5.0"\n'
+)
+
+
+def write_access_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    (tmp_path / "access.log").write_text(ACCESS_LOG, encoding="utf-8")
+    (projects_dir / "example-shop.yaml").write_text(
+        f"""
+name: example-shop
+connection:
+  type: local
+  root: {tmp_path}
+log_aliases:
+  access:
+    path: access.log
+    type: nginx
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+
+
+def test_project_traffic_command_prints_a_bounded_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_access_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["project", "example-shop", "traffic", "access", "--top", "2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Requests: 3 from 2 client IPs" in result.output
+    assert "Status counts: 200=1, 403=1, 404=1" in result.output
+    assert "Top client IPs: 203.0.113.10=2, 192.0.2.44=1" in result.output
+    assert "Errors by client IP:" in result.output
+    assert "192.0.2.44: 404=1" in result.output
+    assert "GET /wp-admin" not in result.output
+
+
+def test_project_traffic_command_supports_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_access_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["project", "example-shop", "traffic", "access", "--format", "json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["summary"]["total_requests"] == 3
+    assert payload["read"]["alias"] == "access"
+
+
+def test_project_security_command_prints_indicators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_access_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(app, ["project", "example-shop", "security", "access"])
+
+    assert result.exit_code == 0, result.output
+    assert "Requests scanned: 3" in result.output
+    assert "[scanner.wordpress] WordPress probe" in result.output
+    assert "count: 1" in result.output
+    assert "Tor classification: unavailable" in result.output
+
+
+def test_project_traffic_rejects_an_out_of_range_top(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_access_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["project", "example-shop", "traffic", "access", "--top", "0"]
+    )
+
+    assert result.exit_code != 0
+    assert "not in the range" in result.output

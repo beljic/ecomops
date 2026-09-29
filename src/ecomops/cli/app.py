@@ -1,7 +1,7 @@
 import os
 from getpass import getpass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import typer
 from pydantic import ValidationError
@@ -14,19 +14,32 @@ from ecomops.analyzers.rules.magento import MagentoAnalyzer
 from ecomops.analyzers.rules.mysql import MySQLAnalyzer
 from ecomops.analyzers.rules.nginx import NginxAnalyzer
 from ecomops.analyzers.rules.php import PhpAnalyzer
+from ecomops.analyzers.traffic import DEFAULT_TOP_N, MAX_TOP_N
 from ecomops.config.log_policy import LogPathPolicyViolation, check_log_path
 from ecomops.config.projects import ProjectRegistry
 from ecomops.config.schema import SSHConnectionConfig
 from ecomops.core.exceptions import EcomOpsError
-from ecomops.core.models import AnalysisContext, LogSource
-from ecomops.core.services import analyze_project_log, check_project
+from ecomops.core.models import (
+    AnalysisContext,
+    LogSource,
+    SecurityReport,
+    TrafficReport,
+)
+from ecomops.core.services import (
+    analyze_project_log,
+    check_project,
+    scan_project_security,
+    summarize_project_traffic,
+)
+from ecomops.logs.inspection import ProjectCheck
 from ecomops.logs.readers import read_local_file
 from ecomops.reports.check import (
     render_check_json,
     render_check_markdown,
     render_check_terminal,
 )
-from ecomops.reports.render import render_report
+from ecomops.reports.render import ReportFormat, render_report
+from ecomops.reports.structured import render_text, security_lines, traffic_lines
 
 MAX_PASSWORD_STDIN_CHARS = 4_096
 
@@ -91,6 +104,9 @@ def project(
     output_format: Literal["terminal", "json", "markdown"] = typer.Option(
         "terminal", "--format"
     ),
+    top: int = typer.Option(
+        DEFAULT_TOP_N, "--top", min=1, max=MAX_TOP_N, help="Top-N size for traffic."
+    ),
     ai: bool = typer.Option(False, "--ai"),
     ai_provider: str = typer.Option("noop", "--ai-provider"),
     prompt_password: bool = typer.Option(
@@ -104,69 +120,124 @@ def project(
         help="Read an SSH password from stdin (one trailing newline is removed).",
     ),
 ) -> None:
-    """List, show, check, or analyze configured projects."""
+    """List, show, check, analyze, traffic, or security for configured projects."""
     try:
         if arguments == ["list"]:
-            for configured_project in ProjectRegistry.load().all():
-                typer.echo(
-                    f"{configured_project.name} "
-                    f"({configured_project.connection.type.upper()})"
-                )
+            _list_projects()
             return
-
         if len(arguments) == 2 and arguments[0] == "show":
-            configured_project = ProjectRegistry.load().get(arguments[1])
-            typer.echo(f"Project: {configured_project.name}")
-            typer.echo(f"Platform: {configured_project.platform}")
-            typer.echo(f"Connection: {configured_project.connection.type.upper()}")
-            typer.echo("Log aliases:")
-            for alias, config in configured_project.log_aliases.items():
-                typer.echo(f"  {alias}: {config.type} ({config.path})")
+            _show_project(arguments[1])
             return
-
-        if len(arguments) == 2 and arguments[1] == "check":
-            check = check_project(
-                arguments[0],
-                ssh_password=_ssh_password(
-                    arguments[0], prompt_password, password_stdin
-                ),
-            )
-            if output_format == "json":
-                typer.echo(render_check_json(check))
-            elif output_format == "markdown":
-                typer.echo(render_check_markdown(check))
-            else:
-                typer.echo(render_check_terminal(check))
-            return
-
-        if len(arguments) != 3 or arguments[1] != "analyze":
+        if len(arguments) not in (2, 3) or arguments[1] not in _PROJECT_ACTIONS:
             raise typer.BadParameter(
-                "Expected 'list', 'show <name>', '<name> check', "
-                "or '<name> analyze <alias>'."
+                "Expected 'list', 'show <name>', '<name> check', or "
+                "'<name> analyze|traffic|security <alias>'."
             )
-
-        ssh_password = _ssh_password(arguments[0], prompt_password, password_stdin)
-
-        report = analyze_project_log(
-            arguments[0],
-            arguments[2],
-            since=since,
-            until=until,
-            max_lines=max_lines,
-            max_bytes=max_bytes,
-            ssh_password=ssh_password,
+        name, action, *rest = arguments
+        if (action == "check") != (not rest):
+            raise typer.BadParameter(
+                f"'{action}' takes {'no' if action == 'check' else 'one'} alias."
+            )
+        ssh_password = _ssh_password(name, prompt_password, password_stdin)
+        read_options: dict[str, Any] = {
+            "since": since,
+            "until": until,
+            "max_lines": max_lines,
+            "max_bytes": max_bytes,
+            "ssh_password": ssh_password,
+        }
+        output = _run_project_action(
+            name,
+            action,
+            rest[0] if rest else None,
+            read_options,
+            output_format,
+            top=top,
+            ai=ai,
+            ai_provider=ai_provider,
         )
-        if ai:
-            context = AnalysisContext(
-                source=report.source,
-                project_name=report.source.project,
-                since=since,
-            )
-            report = enrich_report(report, context, ai_provider)
     except (EcomOpsError, ValidationError, ValueError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from error
-    typer.echo(render_report(report, output_format))
+    typer.echo(output)
+
+
+_PROJECT_ACTIONS = frozenset({"check", "analyze", "traffic", "security"})
+
+
+def _run_project_action(
+    name: str,
+    action: str,
+    alias: str | None,
+    read_options: dict[str, Any],
+    output_format: ReportFormat,
+    *,
+    top: int,
+    ai: bool,
+    ai_provider: str,
+) -> str:
+    if action == "check" or alias is None:
+        check = check_project(name, ssh_password=read_options["ssh_password"])
+        return _render_check(check, output_format)
+    if action == "traffic":
+        traffic = summarize_project_traffic(name, alias, top_n=top, **read_options)
+        return _render_structured(traffic, traffic_lines(traffic), output_format)
+    if action == "security":
+        security = scan_project_security(name, alias, **read_options)
+        return _render_structured(security, security_lines(security), output_format)
+    return _analyze(name, alias, read_options, output_format, ai, ai_provider)
+
+
+def _list_projects() -> None:
+    for configured_project in ProjectRegistry.load().all():
+        typer.echo(
+            f"{configured_project.name} ({configured_project.connection.type.upper()})"
+        )
+
+
+def _show_project(name: str) -> None:
+    configured_project = ProjectRegistry.load().get(name)
+    typer.echo(f"Project: {configured_project.name}")
+    typer.echo(f"Platform: {configured_project.platform}")
+    typer.echo(f"Connection: {configured_project.connection.type.upper()}")
+    typer.echo("Log aliases:")
+    for alias, config in configured_project.log_aliases.items():
+        typer.echo(f"  {alias}: {config.type} ({config.path})")
+
+
+def _render_check(check: ProjectCheck, output_format: str) -> str:
+    if output_format == "json":
+        return render_check_json(check)
+    if output_format == "markdown":
+        return render_check_markdown(check)
+    return render_check_terminal(check)
+
+
+def _render_structured(
+    report: TrafficReport | SecurityReport, lines: list[str], output_format: str
+) -> str:
+    if output_format == "json":
+        return report.model_dump_json(indent=2)
+    return render_text(lines, output_format)
+
+
+def _analyze(
+    name: str,
+    alias: str,
+    read_options: dict[str, Any],
+    output_format: ReportFormat,
+    ai: bool,
+    ai_provider: str,
+) -> str:
+    report = analyze_project_log(name, alias, **read_options)
+    if ai:
+        context = AnalysisContext(
+            source=report.source,
+            project_name=report.source.project,
+            since=read_options["since"],
+        )
+        report = enrich_report(report, context, ai_provider)
+    return render_report(report, output_format)
 
 
 def _ssh_password(

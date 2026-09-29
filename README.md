@@ -64,7 +64,9 @@ What EcomOps can do:
 - check every alias of a project without analyzing it
   (`ecomops project <name> check`);
 - summarize web traffic and scan for security indicators (scanner probes,
-  login guessing, locally configured Tor ranges);
+  login guessing, locally configured Tor ranges) from MCP or the CLI:
+  `ecomops project <name> traffic <alias> --top 10` and
+  `ecomops project <name> security <alias>`;
 - accept time ranges such as `30m`, `24h`, `7d`, `2w`, `1mo`, or ISO dates
   ([details](docs/MCP.md#time-ranges)).
 

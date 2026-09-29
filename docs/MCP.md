@@ -21,6 +21,11 @@ a shell command, raw path, glob, script, upload target, or password.
 Unknown arguments are rejected before any file is touched. `top_n` is 1-50
 (default 10).
 
+The CLI offers the same operations for local and SSH projects:
+`ecomops project <name> check`, and `ecomops project <name>
+analyze|traffic|security <alias>` with `--since`, `--until`, `--max-lines`,
+`--max-bytes`, `--format terminal|json|markdown`, and `--top` (traffic).
+
 ## Start the server
 
 After installing the package with `uv`, configure the MCP client to launch:
