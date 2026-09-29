@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from ecomops.config.schema import LogAliasConfig, SSHConnectionConfig
 from ecomops.core.exceptions import SSHPermissionDeniedError, SSHTransportError
 from ecomops.core.models import (
-    LogEntry,
     LogReadResult,
     SamplingMetadata,
     SourceMetadata,
 )
+from ecomops.logs.filtering import filter_by_time, time_range_of
 from ecomops.logs.inspection import LogFileCandidate, LogFileListing, newest_first
 from ecomops.logs.parsers import parse_lines_with_stats
-from ecomops.logs.sources import ReadLimits, sampled_time_range
+from ecomops.logs.sources import ReadLimits
 from ecomops.logs.time_ranges import TimeRange
 
 from .client import (
@@ -79,11 +79,25 @@ class SSHLogSource:
         *,
         client: _TailClient | None = None,
         password: str | None = None,
-        allowed_dirs: Sequence[Path] = (),
+        allowed_dirs: Sequence[Path],
     ) -> None:
         self._client = client or ParamikoSSHClient(connection)
         self._password = password
+        self._session: AbstractContextManager[None] = nullcontext()
         self._allowed_dirs = [PurePosixPath(os.path.normpath(d)) for d in allowed_dirs]
+
+    def __enter__(self) -> SSHLogSource:
+        """Use one SSH login for every operation until the block ends."""
+        self._session = (
+            self._client.session()
+            if isinstance(self._client, ParamikoSSHClient)
+            else nullcontext()
+        )
+        self._session.__enter__()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._session.__exit__(None, None, None)
 
     def _auth(self) -> dict[str, Any]:
         return {} if self._password is None else {"password": self._password}
@@ -98,16 +112,21 @@ class SSHLogSource:
             path, timeout_seconds=timeout_seconds, **self._auth(), **extra
         )
 
+    def _allowed_base(self, folder: str) -> PurePosixPath | None:
+        """The deepest allowed log folder containing ``folder``, if any."""
+        target = PurePosixPath(os.path.normpath(folder))
+        containing = [
+            allowed
+            for allowed in self._allowed_dirs
+            if allowed == target or allowed in target.parents
+        ]
+        return max(containing, key=lambda allowed: len(allowed.parts), default=None)
+
     def _parents_below_allowed_dir(self, path: str) -> list[str]:
         target = PurePosixPath(os.path.normpath(path))
-        containing = [
-            folder
-            for folder in self._allowed_dirs
-            if folder == target.parent or folder in target.parents
-        ]
-        if not containing:
+        base = self._allowed_base(str(target.parent))
+        if base is None:
             return []
-        base = max(containing, key=lambda folder: len(folder.parts))
         parents = [parent for parent in target.parents if base in parent.parents]
         return [str(parent) for parent in reversed(parents)]
 
@@ -125,11 +144,12 @@ class SSHLogSource:
         validation (``allowed_dirs`` is not needed here); ``find -type f``
         skips symlinks and ``-maxdepth 1`` keeps the listing in one directory.
         """
-        if self._allowed_dirs:
-            folder = self._stat(str(directory), timeout_seconds)
-            if isinstance(folder, RemoteFileMissing) or not folder.is_directory:
-                # Missing folder, or a symlink in the folder path: list nothing.
-                return newest_first(str(directory), pattern, [], truncated=False)
+        if self._allowed_base(str(directory)) is None:
+            return newest_first(str(directory), pattern, [], truncated=False)
+        folder = self._stat(str(directory), timeout_seconds)
+        if isinstance(folder, RemoteFileMissing) or not folder.is_directory:
+            # Missing folder, or a symlink in the folder path: list nothing.
+            return newest_first(str(directory), pattern, [], truncated=False)
         listing = self._client.list_files(
             str(directory), pattern, timeout_seconds=timeout_seconds, **self._auth()
         )
@@ -171,6 +191,12 @@ class SSHLogSource:
         )
 
     def _checked_metadata(self, path: str, timeout_seconds: int) -> SourceMetadata:
+        """Check a file before reading; refuse it without SSH if not allowed."""
+        folder = str(PurePosixPath(os.path.normpath(path)).parent)
+        if self._allowed_base(folder) is None:
+            return SourceMetadata(
+                exists=None, readable=False, error="outside the allowed log folders"
+            )
         file_stat = self._stat(path, timeout_seconds)
         if isinstance(file_stat, RemoteFileMissing):
             return SourceMetadata(
@@ -252,15 +278,15 @@ class SSHLogSource:
         entries = [
             entry.model_copy(update={"line_number": None}) for entry in parsed.entries
         ]
-        sampled_range = sampled_time_range(entries)
-        entries = _filter_entries(entries, time_range)
+        sampled_range = time_range_of(entries)
+        entries = filter_by_time(entries, time_range)
 
         return LogReadResult(
             entries=entries,
             line_count=len(entries),
             byte_count=remote.byte_count,
             truncated=remote.truncated or time_range.exact_selection,
-            actual_range=_actual_range(entries),
+            actual_range=time_range_of(entries),
             # Replaced by the file check's metadata in ``_tail``.
             source_metadata=SourceMetadata(exists=True, readable=True),
             parse_stats=parsed.stats.model_copy(
@@ -285,31 +311,3 @@ def _unreadable_result(metadata: SourceMetadata) -> LogReadResult:
         truncated=False,
         source_metadata=metadata,
     )
-
-
-def _filter_entries(entries: list[LogEntry], time_range: TimeRange) -> list[LogEntry]:
-    if time_range.start is None:
-        return entries
-    assert time_range.end is not None
-
-    filtered_entries: list[LogEntry] = []
-    for entry in entries:
-        if entry.timestamp is None:
-            continue
-        timestamp = _as_utc(entry.timestamp)
-        if time_range.start <= timestamp <= time_range.end:
-            filtered_entries.append(entry.model_copy(update={"timestamp": timestamp}))
-    return filtered_entries
-
-
-def _actual_range(entries: list[LogEntry]) -> TimeRange | None:
-    timestamps = [entry.timestamp for entry in entries if entry.timestamp is not None]
-    if not timestamps:
-        return None
-    return TimeRange(start=min(timestamps), end=max(timestamps))
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)

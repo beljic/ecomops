@@ -22,7 +22,7 @@ class TimeRange:
 
     @classmethod
     def parse(cls, value: str, now: datetime) -> TimeRange:
-        normalized_now = _as_utc(now)
+        normalized_now = as_utc(now)
         normalized_value = value.strip().lower()
 
         if normalized_value == "all":
@@ -47,16 +47,15 @@ class TimeRange:
             return cls(start=start, end=normalized_now)
 
         try:
-            start = _as_utc(
-                datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-            )
+            start = as_utc(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
         except ValueError as error:
             raise ValueError(f"Invalid time range: {value}") from error
 
         return cls(start=start, end=normalized_now, exact_selection=True)
 
 
-def _as_utc(value: datetime) -> datetime:
+def as_utc(value: datetime) -> datetime:
+    """Treat a naive timestamp as UTC; convert an aware one to UTC."""
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)

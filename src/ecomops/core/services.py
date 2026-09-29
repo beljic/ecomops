@@ -146,28 +146,25 @@ def _read_project_log(
     """Resolve the alias to one policy-checked log file and read it, bounded."""
     project_config = ProjectRegistry.load().get(project)
     alias_config = project_config.resolve_log_alias(alias)
-    source = _source(project_config, alias, ssh_password, ssh_username)
-    selected_path, _ = select_log_file(
-        project_config, alias, source, timeout_seconds=DEFAULT_TIMEOUT_SECONDS
-    )
-    if selected_path is None:
-        _, pattern = project_config.resolve_log_glob(alias)
-        raise LogFileNotFoundError(
-            f"No files match {pattern} for log alias '{alias}' "
-            f"in project '{project_config.name}'."
-        )
     time_range = _resolve_time_range(since, until)
     limits = ReadLimits(
         max_lines=MAX_READ_LINES if max_lines is None else max_lines,
         max_bytes=DEFAULT_MAX_BYTES if max_bytes is None else max_bytes,
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
     )
-    resolved_alias = alias_config.model_copy(update={"path": selected_path})
-    return (
-        project_config,
-        selected_path,
-        source.read(resolved_alias, limits, time_range),
-    )
+    with _source(project_config, alias, ssh_password, ssh_username) as source:
+        selected_path, _ = select_log_file(
+            project_config, alias, source, timeout_seconds=DEFAULT_TIMEOUT_SECONDS
+        )
+        if selected_path is None:
+            _, pattern = project_config.resolve_log_glob(alias)
+            raise LogFileNotFoundError(
+                f"No files match {pattern} for log alias '{alias}' "
+                f"in project '{project_config.name}'."
+            )
+        resolved_alias = alias_config.model_copy(update={"path": selected_path})
+        read_result = source.read(resolved_alias, limits, time_range)
+    return project_config, selected_path, read_result
 
 
 def _read_context(
@@ -199,10 +196,10 @@ def list_project_log_files(
 ) -> LogFileListing:
     """List files matched by a configured glob alias; reads no log content."""
     project_config = ProjectRegistry.load().get(project)
-    source = _source(project_config, alias, ssh_password, ssh_username)
-    return list_log_files(
-        project_config, alias, source, timeout_seconds=DEFAULT_TIMEOUT_SECONDS
-    )
+    with _source(project_config, alias, ssh_password, ssh_username) as source:
+        return list_log_files(
+            project_config, alias, source, timeout_seconds=DEFAULT_TIMEOUT_SECONDS
+        )
 
 
 def inspect_project_log(
@@ -213,7 +210,8 @@ def inspect_project_log(
 ) -> LogInspection:
     """Report file health and parser recognition for one alias; no analyzers run."""
     project_config = ProjectRegistry.load().get(project)
-    return _inspect_alias(project_config, alias, ssh_password, ssh_username)
+    with _source(project_config, alias, ssh_password, ssh_username) as source:
+        return _inspect_alias(project_config, alias, source)
 
 
 def check_project(
@@ -228,25 +226,27 @@ def check_project(
     """
     project_config = ProjectRegistry.load().get(project)
     inspections: list[LogInspection] = []
-    for alias in project_config.log_aliases:
-        try:
-            inspections.append(
-                _inspect_alias(project_config, alias, ssh_password, ssh_username)
-            )
-        except SSHPermissionDeniedError:
-            raise
-        except SSHTransportError:
-            inspections.append(
-                _base_inspection(project_config, alias).model_copy(
-                    update={
-                        "source_metadata": SourceMetadata(
-                            exists=False,
-                            readable=False,
-                            error="SSH connection or read failed",
+    first_alias = next(iter(project_config.log_aliases), None)
+    if first_alias is not None:
+        # One source, and so one SSH login, serves every alias of the project.
+        with _source(project_config, first_alias, ssh_password, ssh_username) as source:
+            for alias in project_config.log_aliases:
+                try:
+                    inspections.append(_inspect_alias(project_config, alias, source))
+                except SSHPermissionDeniedError:
+                    raise
+                except SSHTransportError:
+                    inspections.append(
+                        _base_inspection(project_config, alias).model_copy(
+                            update={
+                                "source_metadata": SourceMetadata(
+                                    exists=None,
+                                    readable=False,
+                                    error="SSH connection or read failed",
+                                )
+                            }
                         )
-                    }
-                )
-            )
+                    )
     return ProjectCheck(
         project=project_config.name,
         connection_type=project_config.connection.type,
@@ -268,11 +268,9 @@ def _base_inspection(project_config: ProjectConfig, alias: str) -> LogInspection
 def _inspect_alias(
     project_config: ProjectConfig,
     alias: str,
-    ssh_password: str | None,
-    ssh_username: str | None = None,
+    source: LocalLogSource | SSHLogSource,
 ) -> LogInspection:
     alias_config = project_config.resolve_log_alias(alias)
-    source = _source(project_config, alias, ssh_password, ssh_username)
     try:
         selected_path, listing = select_log_file(
             project_config, alias, source, timeout_seconds=DEFAULT_TIMEOUT_SECONDS

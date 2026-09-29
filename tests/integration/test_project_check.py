@@ -178,11 +178,14 @@ log_aliases:
     monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
     remote = FakeRemote()
 
+    constructed: list[object] = []
+
     def fake_source(
         connection: SSHConnectionConfig,
         password: str | None = None,
         allowed_dirs: list[Path] | None = None,
     ) -> SSHLogSource:
+        constructed.append(connection)
         return SSHLogSource(connection, client=remote, allowed_dirs=allowed_dirs or [])
 
     monkeypatch.setattr(resolver, "SSHLogSource", fake_source)
@@ -195,6 +198,7 @@ log_aliases:
     assert "Selected: /srv/example-shop/var/log/transfer-a.log" in result.output
     assert "Source: exists, readable, 9000 bytes" in result.output
     assert "Source: missing, unreadable (file not found)" in result.output
+    assert len(constructed) == 1, "one SSH source (one login) per project check"
     assert remote.calls == [
         "stat /srv/example-shop/var/log/system.log",
         "tail /srv/example-shop/var/log/system.log",

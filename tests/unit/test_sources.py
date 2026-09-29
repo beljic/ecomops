@@ -332,3 +332,31 @@ def test_local_source_reports_a_file_that_disappears_during_the_read(
     assert result.source_metadata is not None
     assert result.source_metadata.readable is False
     assert result.source_metadata.error == "file disappeared or became unreadable"
+
+
+MULTILINE = (
+    "#9 orphan continuation from an earlier entry\n"
+    "[2026-09-03T09:00:00+00:00] main.CRITICAL: Old failure\n"
+    "#0 /app/Old.php(1): old()\n"
+    "[2026-09-03T12:00:00+00:00] main.CRITICAL: Payment failed\n"
+    "#0 /app/Model/Payment.php(42): charge()\n"
+    "#1 {main}\n"
+)
+
+
+def test_time_filter_keeps_continuation_lines_of_kept_entries(tmp_path: Path) -> None:
+    path = tmp_path / "exception.log"
+    path.write_text(MULTILINE, encoding="utf-8")
+
+    result = LocalLogSource().read(
+        alias(path), limits(max_bytes=10_000), TimeRange.parse("1h", NOW)
+    )
+
+    assert [entry.message for entry in result.entries] == [
+        "Payment failed",
+        "#0 /app/Model/Payment.php(42): charge()",
+        "#1 {main}",
+    ]
+    assert result.line_count == 3
+    assert result.parse_stats is not None
+    assert result.parse_stats.filtered_out_lines == 3

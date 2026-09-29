@@ -180,6 +180,12 @@ def test_service_includes_ssh_read_metadata_in_report(
     from ecomops.core import services
 
     class StubSource:
+        def __enter__(self) -> "StubSource":
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
         def read(
             self, alias: object, limits: object, time_range: TimeRange
         ) -> LogReadResult:

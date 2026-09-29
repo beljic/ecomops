@@ -3,7 +3,8 @@ from __future__ import annotations
 import importlib
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol, cast
@@ -128,6 +129,27 @@ class ParamikoSSHClient:
         self._connection = connection
         self._paramiko = paramiko_module or _load_paramiko()
         self._monotonic = monotonic
+        self._in_session = False
+        self._session_client: _SSHClient | None = None
+
+    @contextmanager
+    def session(self) -> Iterator[None]:
+        """Reuse one SSH login for every command run inside this block.
+
+        Each command still gets its own channel. Outside a session every
+        command logs in and out on its own. The login is closed when the block
+        ends, and dropped early after any transport error.
+        """
+        if self._in_session:
+            yield
+            return
+        self._in_session = True
+        try:
+            yield
+        finally:
+            self._in_session = False
+            _close_quietly(self._session_client, "client")
+            self._session_client = None
 
     def read_tail(
         self,
@@ -224,9 +246,52 @@ class ParamikoSSHClient:
         deadline = self._monotonic() + timeout_seconds
         client: _SSHClient | None = None
         channel: _Channel | None = None
+        keep_login = False
 
         try:
-            client = self._paramiko.SSHClient()
+            client = self._logged_in_client(deadline, password)
+            transport = client.get_transport()
+            if transport is None:
+                raise SSHTransportError("SSH connection did not provide a transport")
+            channel = transport.open_session(
+                timeout=_remaining_timeout(deadline, self._monotonic)
+            )
+            channel.settimeout(_remaining_timeout(deadline, self._monotonic))
+            channel.exec_command(command)
+            result = _read_bounded_channel(
+                channel,
+                max_lines=max_lines,
+                max_bytes=max_bytes,
+                deadline=deadline,
+                monotonic=self._monotonic,
+                failure_message=failure_message,
+            )
+            keep_login = self._in_session
+            return result
+        except RemoteCommandFailedError:
+            # The command ran and failed (missing file, permission); the login
+            # itself is healthy and can serve the next command.
+            keep_login = self._in_session
+            raise
+        except (ConfigurationError, SSHTransportError):
+            raise
+        except Exception as error:
+            _LOGGER.debug("SSH remote log read failed")
+            if _is_permission_error(error):
+                raise SSHPermissionDeniedError("SSH permission denied") from error
+            raise SSHTransportError("SSH connection or read failed") from error
+        finally:
+            _close_quietly(channel, "channel")
+            if not keep_login:
+                _close_quietly(client, "client")
+                if client is self._session_client:
+                    self._session_client = None
+
+    def _logged_in_client(self, deadline: float, password: str | None) -> _SSHClient:
+        if self._session_client is not None:
+            return self._session_client
+        client = self._paramiko.SSHClient()
+        try:
             client.load_system_host_keys()
             if self._connection.known_hosts_path is not None:
                 validate_file_permissions(self._connection.known_hosts_path)
@@ -238,33 +303,12 @@ class ParamikoSSHClient:
                     password=password,
                 )
             )
-
-            transport = client.get_transport()
-            if transport is None:
-                raise SSHTransportError("SSH connection did not provide a transport")
-            channel = transport.open_session(
-                timeout=_remaining_timeout(deadline, self._monotonic)
-            )
-            channel.settimeout(_remaining_timeout(deadline, self._monotonic))
-            channel.exec_command(command)
-            return _read_bounded_channel(
-                channel,
-                max_lines=max_lines,
-                max_bytes=max_bytes,
-                deadline=deadline,
-                monotonic=self._monotonic,
-                failure_message=failure_message,
-            )
-        except (ConfigurationError, SSHTransportError):
-            raise
-        except Exception as error:
-            _LOGGER.debug("SSH remote log read failed")
-            if _is_permission_error(error):
-                raise SSHPermissionDeniedError("SSH permission denied") from error
-            raise SSHTransportError("SSH connection or read failed") from error
-        finally:
-            _close_quietly(channel, "channel")
+        except BaseException:
             _close_quietly(client, "client")
+            raise
+        if self._in_session:
+            self._session_client = client
+        return client
 
     def _connection_arguments(
         self, timeout_seconds: float, *, password: str | None = None

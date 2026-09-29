@@ -28,6 +28,7 @@ from ecomops.ssh.fetcher import SSHLogSource
 from ecomops.ssh.read_only import MAX_LIST_ENTRIES
 
 NOW = datetime(2026, 9, 3, 12, 30, tzinfo=UTC)
+ALLOWED_DIRS = [Path("/var/log"), Path("/srv/example-shop"), Path("/srv/shop")]
 
 
 class RejectPolicySentinel:
@@ -539,7 +540,9 @@ class FakeTailClient:
         self.result = result
         self.calls: list[dict[str, object]] = []
 
-    def stat_file(self, path: str, *, timeout_seconds: int) -> RemoteFileStat | None:
+    def stat_file(
+        self, path: str, *, timeout_seconds: int, parents: object = ()
+    ) -> RemoteFileStat | None:
         return RemoteFileStat(
             size_bytes=len(self.result.data),
             modified_at=datetime(2026, 9, 3, tzinfo=UTC),
@@ -576,7 +579,7 @@ def test_ssh_log_source_consumes_task_two_interfaces_and_filters_range() -> None
             truncated=True,
         )
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
     alias = LogAliasConfig(path="/var/log/app.log", type="php")
     limits = ReadLimits(max_lines=50, max_bytes=1_000, timeout_seconds=9)
 
@@ -609,7 +612,7 @@ def test_ssh_log_source_marks_exact_historical_selection_incomplete() -> None:
             truncated=False,
         )
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.read(
         LogAliasConfig(path="/var/log/app.log", type="php"),
@@ -632,7 +635,7 @@ def test_ssh_log_source_reports_tail_sampling_and_parse_stats() -> None:
             truncated=True,
         )
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.read(
         LogAliasConfig(path="/var/log/app.log", type="php"),
@@ -640,7 +643,7 @@ def test_ssh_log_source_reports_tail_sampling_and_parse_stats() -> None:
         TimeRange.parse("1h", NOW),
     )
 
-    assert result.line_count == 1
+    assert result.line_count == 2
     assert result.source_metadata is not None
     assert result.source_metadata.exists is True
     assert result.source_metadata.readable is True
@@ -655,7 +658,7 @@ def test_ssh_log_source_reports_tail_sampling_and_parse_stats() -> None:
     assert result.parse_stats.parsed_lines == 2
     assert result.parse_stats.unparsed_lines == 1
     assert result.parse_stats.level_counts == {"ERROR": 1, "WARNING": 1}
-    assert result.parse_stats.filtered_out_lines == 2
+    assert result.parse_stats.filtered_out_lines == 1
 
 
 def test_paramiko_stat_runs_only_the_fixed_file_check_command() -> None:
@@ -806,7 +809,16 @@ class FakeInspectClient(FakeTailClient):
             timeout_seconds=timeout_seconds,
         )
 
-    def stat_file(self, path: str, *, timeout_seconds: int) -> RemoteFileStat | None:
+    def stat_file(
+        self, path: str, *, timeout_seconds: int, parents: object = ()
+    ) -> RemoteFileStat | RemoteFileMissing | None:
+        if not path.endswith(".log"):
+            return RemoteFileStat(
+                size_bytes=0,
+                modified_at=MTIME,
+                is_regular_file=False,
+                is_directory=True,
+            )
         self.stat_calls.append(path)
         return self.stat
 
@@ -832,7 +844,7 @@ def test_ssh_source_lists_candidates_newest_first() -> None:
             truncated=False,
         ),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     listing = source.list_candidates(
         Path("/srv/example-shop/var/log"), "transfer-*.log", timeout_seconds=9
@@ -853,7 +865,7 @@ def test_ssh_source_inspect_combines_stat_and_a_bounded_sample() -> None:
         ),
         stat=RemoteFileStat(size_bytes=9_000, modified_at=MTIME, is_regular_file=True),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.inspect(
         LogAliasConfig(path="/var/log/app.log", type="php"), INSPECT_LIMITS
@@ -874,7 +886,7 @@ def test_ssh_source_inspect_reports_a_missing_file_without_reading() -> None:
         RemoteReadResult(data=b"", byte_count=0, truncated=False),
         stat=RemoteFileMissing(reason="not_found"),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.inspect(
         LogAliasConfig(path="/var/log/missing.log", type="php"), INSPECT_LIMITS
@@ -891,7 +903,7 @@ def test_ssh_source_reports_an_inaccessible_folder_separately() -> None:
         RemoteReadResult(data=b"", byte_count=0, truncated=False),
         stat=RemoteFileMissing(reason="permission_denied"),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.inspect(
         LogAliasConfig(path="/var/log/app.log", type="php"), INSPECT_LIMITS
@@ -910,7 +922,7 @@ def test_ssh_read_keeps_size_and_mtime_from_the_file_check() -> None:
         RemoteReadResult(data=b"line\n", byte_count=5, truncated=False),
         stat=RemoteFileStat(size_bytes=9_000, modified_at=MTIME, is_regular_file=True),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.read(
         LogAliasConfig(path="/var/log/app.log", type="php"),
@@ -934,7 +946,7 @@ def test_ssh_tail_permission_error_is_reported_as_permission_denied(
             "Remote tail command failed", reason="permission_denied"
         ),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
     alias = LogAliasConfig(path="/var/log/app.log", type="php")
 
     if method == "read":
@@ -958,7 +970,7 @@ def test_ssh_source_inspect_reports_an_unreadable_file() -> None:
         stat=RemoteFileStat(size_bytes=10, modified_at=MTIME, is_regular_file=True),
         read_error=SSHTransportError("Remote tail command failed"),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.inspect(
         LogAliasConfig(path="/var/log/secret.log", type="php"), INSPECT_LIMITS
@@ -979,7 +991,7 @@ def test_ssh_source_inspect_propagates_authentication_denial() -> None:
         stat=RemoteFileStat(size_bytes=10, modified_at=MTIME, is_regular_file=True),
         read_error=SSHPermissionDeniedError("SSH permission denied"),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     with pytest.raises(SSHPermissionDeniedError):
         source.inspect(
@@ -998,7 +1010,7 @@ def test_ssh_log_source_applies_the_alias_client_ip_policy() -> None:
             truncated=False,
         )
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.read(
         LogAliasConfig(
@@ -1033,7 +1045,7 @@ def test_ssh_read_checks_the_file_before_tailing_it(
     remote = FakeInspectClient(
         RemoteReadResult(data=b"secret\n", byte_count=7, truncated=False), stat=stat
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     result = source.read(
         LogAliasConfig(path="/var/log/app.log", type="php"),
@@ -1052,7 +1064,7 @@ def test_ssh_inspect_checks_the_file_once() -> None:
         RemoteReadResult(data=b"line\n", byte_count=5, truncated=False),
         stat=RemoteFileStat(size_bytes=5, modified_at=MTIME, is_regular_file=True),
     )
-    source = SSHLogSource(connection(), client=remote)
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
 
     source.inspect(LogAliasConfig(path="/var/log/app.log", type="php"), INSPECT_LIMITS)
 
@@ -1145,3 +1157,133 @@ class RecordingParentsClient(FakeTailClient):
     ) -> RemoteListing:
         self.list_calls.append(directory)
         return RemoteListing(entries=[], truncated=False)
+
+
+def test_ssh_time_filter_keeps_continuation_lines_of_kept_entries() -> None:
+    data = (
+        b"[2026-09-03 09:00:00] ERROR: old\n"
+        b"  old detail\n"
+        b"[2026-09-03 12:00:00] ERROR: recent\n"
+        b"  recent detail\n"
+    )
+    remote = FakeTailClient(
+        RemoteReadResult(data=data, byte_count=len(data), truncated=False)
+    )
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=ALLOWED_DIRS)
+
+    result = source.read(
+        LogAliasConfig(path="/var/log/app.log", type="php"),
+        INSPECT_LIMITS,
+        TimeRange.parse("1h", NOW),
+    )
+
+    assert [entry.message for entry in result.entries] == [
+        "recent",
+        "  recent detail",
+    ]
+    assert result.parse_stats is not None
+    assert result.parse_stats.filtered_out_lines == 2
+
+
+def test_ssh_source_requires_the_allowed_log_folders() -> None:
+    with pytest.raises(TypeError, match="allowed_dirs"):
+        SSHLogSource(
+            connection(), client=FakeTailClient(RemoteReadResult(b"", 0, False))
+        )  # type: ignore[call-arg]
+
+
+def test_ssh_source_refuses_paths_outside_the_allowed_folders_without_ssh() -> None:
+    remote = FakeInspectClient(
+        RemoteReadResult(data=b"secret\n", byte_count=7, truncated=False),
+        stat=RemoteFileStat(size_bytes=7, modified_at=MTIME, is_regular_file=True),
+    )
+    source = SSHLogSource(connection(), client=remote, allowed_dirs=[Path("/var/log")])
+
+    read = source.read(
+        LogAliasConfig(path="/opt/other/app.log", type="php"),
+        INSPECT_LIMITS,
+        TimeRange.parse("all", NOW),
+    )
+    listing = source.list_candidates(Path("/opt/other"), "app-*.log", timeout_seconds=9)
+
+    assert remote.stat_calls == []
+    assert remote.calls == []
+    assert remote.list_calls == []
+    assert read.source_metadata is not None
+    assert read.source_metadata.error == "outside the allowed log folders"
+    assert listing.files == []
+
+
+class MultiChannelTransport(FakeTransport):
+    def __init__(self, channels: list[FakeChannel]) -> None:
+        super().__init__(channels[0])
+        self.channels = list(channels)
+
+    def open_session(self, timeout: float | None = None) -> FakeChannel:
+        assert timeout is not None
+        self.open_session_timeouts.append(timeout)
+        return self.channels.pop(0)
+
+
+def test_paramiko_session_reuses_one_login_for_several_commands() -> None:
+    channels = [
+        FakeChannel([b"f 5 1788000000.0\n", b""]),
+        FakeChannel([b"line\n", b""]),
+    ]
+    ssh_client = FakeSSHClient(MultiChannelTransport(channels))
+    client = ParamikoSSHClient(connection(), paramiko_module=FakeParamiko(ssh_client))
+    used = list(channels)
+
+    with client.session():
+        client.stat_file("/var/log/app.log", timeout_seconds=7)
+        client.read_tail(
+            "/var/log/app.log", max_lines=5, max_bytes=64, timeout_seconds=7
+        )
+        assert ssh_client.closed is False
+
+    assert len(ssh_client.connect_calls) == 1
+    assert [channel.commands for channel in used] == [
+        ["find /var/log/app.log -maxdepth 0 -printf '%y %s %T@\\n'"],
+        ["tail -c 64 -- /var/log/app.log"],
+    ]
+    assert all(channel.closed for channel in used)
+    assert ssh_client.closed is True
+
+
+def test_paramiko_session_keeps_the_login_after_a_failed_command() -> None:
+    channels = [
+        FakeChannel([b""], exit_status=1, stderr=b"No such file or directory\n"),
+        FakeChannel([b"line\n", b""]),
+    ]
+    ssh_client = FakeSSHClient(MultiChannelTransport(channels))
+    client = ParamikoSSHClient(connection(), paramiko_module=FakeParamiko(ssh_client))
+
+    with client.session():
+        missing = client.stat_file("/var/log/missing.log", timeout_seconds=7)
+        client.read_tail(
+            "/var/log/app.log", max_lines=5, max_bytes=64, timeout_seconds=7
+        )
+
+    assert missing == RemoteFileMissing(reason="not_found")
+    assert len(ssh_client.connect_calls) == 1
+
+
+def test_ssh_source_reads_with_a_single_login() -> None:
+    channels = [
+        FakeChannel([b"f 5 1788000000.0\n", b""]),
+        FakeChannel([b"line\n", b""]),
+    ]
+    ssh_client = FakeSSHClient(MultiChannelTransport(channels))
+    client = ParamikoSSHClient(connection(), paramiko_module=FakeParamiko(ssh_client))
+    source = SSHLogSource(connection(), client=client, allowed_dirs=ALLOWED_DIRS)
+
+    with source:
+        result = source.read(
+            LogAliasConfig(path="/var/log/app.log", type="php"),
+            INSPECT_LIMITS,
+            TimeRange.parse("all", NOW),
+        )
+
+    assert [entry.message for entry in result.entries] == ["line"]
+    assert len(ssh_client.connect_calls) == 1
+    assert ssh_client.closed is True

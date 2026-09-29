@@ -7,12 +7,12 @@ from pathlib import Path
 
 from ecomops.config.schema import LogAliasConfig
 from ecomops.core.models import (
-    LogEntry,
     LogReadResult,
     SamplingMetadata,
     SourceMetadata,
 )
 
+from .filtering import filter_by_time, time_range_of
 from .inspection import LogFileListing, list_local_candidates
 from .parsers import parse_lines_with_stats
 from .readers import read_local_bytes
@@ -36,6 +36,12 @@ class ReadLimits:
 
 
 class LocalLogSource:
+    def __enter__(self) -> LocalLogSource:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
     def list_candidates(
         self,
         directory: Path,
@@ -100,8 +106,8 @@ class LocalLogSource:
             entries = [
                 entry.model_copy(update={"line_number": None}) for entry in entries
             ]
-        sampled_range = sampled_time_range(entries)
-        entries = _filter_entries(entries, time_range=time_range)
+        sampled_range = time_range_of(entries)
+        entries = filter_by_time(entries, time_range)
         parse_stats = parsed.stats.model_copy(
             update={"filtered_out_lines": len(parsed.entries) - len(entries)}
         )
@@ -112,7 +118,7 @@ class LocalLogSource:
             or time_range.exact_selection
         )
         entries = entries[: limits.max_lines]
-        actual_range = _actual_range(entries)
+        actual_range = time_range_of(entries)
 
         return LogReadResult(
             entries=entries,
@@ -169,16 +175,6 @@ def inspect_local_file(path: Path) -> SourceMetadata:
     )
 
 
-def sampled_time_range(entries: list[LogEntry]) -> TimeRange | None:
-    """Time range covered by every timestamped line in the sample, in UTC."""
-    timestamps = [
-        _as_utc(entry.timestamp) for entry in entries if entry.timestamp is not None
-    ]
-    if not timestamps:
-        return None
-    return TimeRange(start=min(timestamps), end=max(timestamps))
-
-
 def _complete_lines(data: bytes, *, starts_mid_line: bool, at_end: bool) -> list[str]:
     lines = data.splitlines(keepends=True)
     if starts_mid_line and lines:
@@ -186,33 +182,3 @@ def _complete_lines(data: bytes, *, starts_mid_line: bool, at_end: bool) -> list
     if not at_end and lines and not lines[-1].endswith((b"\n", b"\r")):
         lines = lines[:-1]
     return [line.decode("utf-8", errors="replace") for line in lines]
-
-
-def _filter_entries(
-    entries: list[LogEntry], *, time_range: TimeRange
-) -> list[LogEntry]:
-    if time_range.start is None:
-        return entries
-    assert time_range.end is not None
-
-    filtered_entries: list[LogEntry] = []
-    for entry in entries:
-        if entry.timestamp is None:
-            continue
-        timestamp = _as_utc(entry.timestamp)
-        if time_range.start <= timestamp <= time_range.end:
-            filtered_entries.append(entry.model_copy(update={"timestamp": timestamp}))
-    return filtered_entries
-
-
-def _actual_range(entries: list[LogEntry]) -> TimeRange | None:
-    timestamps = [entry.timestamp for entry in entries if entry.timestamp is not None]
-    if not timestamps:
-        return None
-    return TimeRange(start=min(timestamps), end=max(timestamps))
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)

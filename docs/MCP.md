@@ -209,6 +209,11 @@ never written to YAML, environment files, reports, caches, or temporary files.
 - an ISO date or timestamp, for example `2026-09-01` (midnight UTC) or
   `2026-09-01T00:00:00Z`.
 
+Lines without a timestamp, such as stack-trace frames under a Magento
+exception, belong to the nearest timestamped line above them and are kept or
+dropped with it. Lines before the first timestamp in the sample have no known
+time and are dropped when a range is set.
+
 Zero, negative, fractional, and unknown values are rejected with an
 `Invalid time range` error. Relative and ISO ranges read the end of the file,
 so older entries outside the byte limit are not seen; reports mark such reads
@@ -282,6 +287,10 @@ from a configured, policy-checked path:
   its allowed log folder), without following symlinks;
 - `find <absolute folder> -maxdepth 1 -type f -name <pattern> -printf ...`:
   list the regular files of one log folder for a glob alias.
+
+Each tool call uses a single SSH login; its commands run on separate
+channels of that login, which is closed when the call ends. A path outside the
+allowed log folders is refused before any SSH command runs.
 
 It never creates temporary files, writes to remote systems, opens SFTP,
 requests a TTY or forwarding, invokes `sudo`, or performs remediation. It
