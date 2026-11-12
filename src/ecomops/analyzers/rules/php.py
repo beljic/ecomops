@@ -12,10 +12,13 @@ class PhpAnalyzer:
     def analyze(
         self, entries: Sequence[LogEntry], context: AnalysisContext
     ) -> list[Finding]:
-        memory_entries = [
-            entry
-            for entry in entries
+        indexes = {
+            index
+            for index, entry in enumerate(entries)
             if re.search(r"allowed memory size.*exhausted", entry.message, re.I)
+        }
+        memory_entries = [
+            entry for index, entry in enumerate(entries) if index in indexes
         ]
         if not memory_entries:
             return []
@@ -38,6 +41,7 @@ class PhpAnalyzer:
                 root_cause_guess="A PHP process exceeded its configured memory limit.",
                 evidence=evidence,
                 count=len(memory_entries),
+                matched_entry_indexes=indexes,
                 first_seen=first.timestamp,
                 last_seen=memory_entries[-1].timestamp,
                 recommended_steps=[

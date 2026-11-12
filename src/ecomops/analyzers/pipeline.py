@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from ecomops.analyzers.base import Analyzer
+from ecomops.analyzers.unclassified import DEFAULT_TOP_N, unclassified_findings
 from ecomops.core.models import AnalysisContext, AnalysisReport, Finding, LogEntry
 
 
@@ -9,14 +10,22 @@ class AnalyzerPipeline:
     def __init__(self, analyzers: Sequence[Analyzer]) -> None:
         self.analyzers = analyzers
 
-    def run(self, entries: list[LogEntry], context: AnalysisContext) -> AnalysisReport:
+    def run(
+        self,
+        entries: list[LogEntry],
+        context: AnalysisContext,
+        *,
+        top_n: int = DEFAULT_TOP_N,
+    ) -> AnalysisReport:
         grouped: dict[str, Finding] = {}
+        claimed: set[int] = set()
         for analyzer in self.analyzers:
             try:
                 findings = analyzer.analyze(entries, context)
             except Exception:
                 continue
             for finding in findings:
+                claimed.update(finding.matched_entry_indexes)
                 if finding.id not in grouped:
                     grouped[finding.id] = finding
                     continue
@@ -29,6 +38,7 @@ class AnalyzerPipeline:
             grouped.values(),
             key=lambda finding: (order[finding.severity.value], -finding.count),
         )
+        findings.extend(unclassified_findings(entries, claimed, top_n=top_n))
         return AnalysisReport(
             source=context.source,
             findings=findings,

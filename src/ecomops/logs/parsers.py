@@ -28,6 +28,7 @@ _NGINX_ERROR = re.compile(
     r"^(?P<timestamp>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) "
     r"\[(?P<level>[a-z]+)\] \d+#\d+: (?P<message>.*)$"
 )
+_CONTINUATION = re.compile(r'^\s*(?:#\d+\b|Stack trace\b|[{}\[\]]|"[^"\n]+"\s*:)', re.I)
 # Locale-independent month names for nginx $time_local.
 _MONTHS = {
     name: index
@@ -58,9 +59,17 @@ def parse_lines_with_stats(
     entries: list[LogEntry] = []
     level_counts: Counter[str] = Counter()
     format_counts: Counter[str] = Counter()
+    continuation_lines = 0
+    previous_record: int | None = None
     for line_number, line in enumerate(lines, start=1):
         raw = line.rstrip("\r\n")
-        entry = LogEntry(source=source, message=raw, raw=raw, line_number=line_number)
+        entry = LogEntry(
+            source=source,
+            message=raw,
+            raw=raw,
+            line_number=line_number,
+            record_id=line_number,
+        )
         match = _PREFIX.match(raw)
         if match:
             format_counts["bracketed"] += 1
@@ -89,6 +98,17 @@ def parse_lines_with_stats(
                 entry = entry.model_copy(
                     update={"timestamp": timestamp, "access": request}
                 )
+        if entry.timestamp is not None:
+            previous_record = entry.record_id if entry.access is None else None
+        elif previous_record is not None and (
+            not raw or raw[0].isspace() or _CONTINUATION.match(raw)
+        ):
+            entry = entry.model_copy(
+                update={"record_id": previous_record, "is_continuation": True}
+            )
+            continuation_lines += 1
+        else:
+            previous_record = None
         entries.append(entry)
     parsed_lines = sum(format_counts.values())
     return ParseResult(
@@ -96,7 +116,8 @@ def parse_lines_with_stats(
         stats=ParseStats(
             total_lines=len(entries),
             parsed_lines=parsed_lines,
-            unparsed_lines=len(entries) - parsed_lines,
+            unparsed_lines=len(entries) - parsed_lines - continuation_lines,
+            continuation_lines=continuation_lines,
             level_counts=dict(level_counts),
             format_counts=dict(format_counts),
         ),

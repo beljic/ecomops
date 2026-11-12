@@ -28,6 +28,13 @@ def render_terminal(report: AnalysisReport) -> str:
         lines.append(
             f"[{finding.severity.value}] {finding.title} (count: {finding.count})"
         )
+        if finding.category == "unclassified":
+            lines.append(f"  {finding.level}: {finding.message}")
+            lines.append(
+                f"  First seen: {finding.first_seen}; last seen: {finding.last_seen}"
+            )
+            if finding.source is not None:
+                lines.append(f"  Source: {finding.source}")
         for evidence in finding.evidence:
             location = (
                 f"line {evidence.line_number}"

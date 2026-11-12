@@ -27,6 +27,58 @@ log_aliases:
     )
 
 
+@pytest.mark.parametrize("output_format", ["terminal", "markdown", "json"])
+def test_project_analyze_shows_unknown_errors_with_top_and_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output_format: str
+) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    path = tmp_path / "system.log"
+    path.write_text(
+        "[2026-11-05T05:19:00+00:00] main.CRITICAL: Old failure {} []\n"
+        + "[2026-11-06T05:19:00+00:00] main.ERROR: Unable to proceed: "
+        "the maintenance mode is enabled. {} []\n"
+        * 3
+        + "[2026-11-06T05:20:00+00:00] main.CRITICAL: Other failure {} []\n"
+        + "#0 /var/www/html/app/Example.php(42): Example->run()\n",
+        encoding="utf-8",
+    )
+    write_project_config(projects_dir, path)
+    monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "project",
+            "local-store",
+            "analyze",
+            "php",
+            "--top",
+            "1",
+            "--since",
+            "2026-11-06T00:00:00Z",
+            "--until",
+            "2026-11-07T00:00:00Z",
+            "--format",
+            output_format,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Unclassified errors" in result.output
+    assert "maintenance mode is enabled" in result.output
+    assert "Old failure" not in result.output
+    assert "Other failure" not in result.output
+    assert "No findings." not in result.output
+    if output_format == "json":
+        report = json.loads(result.output)
+        assert report["findings"][0]["count"] == 3
+        assert report["findings"][0]["level"] == "ERROR"
+        assert len(report["findings"]) == 1
+        assert report["parse_stats"]["continuation_lines"] == 1
+        assert report["parse_stats"]["filtered_out_lines"] == 1
+
+
 def test_project_commands_list_show_and_analyze_bounded_local_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,6 +214,8 @@ log_aliases:
         max_lines: int | None,
         max_bytes: int | None,
         ssh_password: str | None,
+        *,
+        top_n: int,
     ) -> AnalysisReport:
         received["password"] = ssh_password
         return AnalysisReport(

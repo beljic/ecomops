@@ -12,6 +12,10 @@ _COOKIE_RE = re.compile(r"(?i)\b(cookie\s*[:=]\s*)[^\r\n]+")
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
 _MAGENTO_KEY_RE = re.compile(r"(?i)([?&]key=)[^&#\s]+")
+_JSON_SECRET_RE = re.compile(
+    r"""(?i)(["'](?:api[_-]?key|token|secret|password|session[_-]?id|authorization|cookie)["']\s*:\s*)"""
+    r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}]+)"""
+)
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -19,6 +23,7 @@ def redact_sensitive_text(text: str) -> str:
     redacted = _BEARER_RE.sub(r"\1[REDACTED]", text)
     redacted = _AUTH_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _COOKIE_RE.sub(r"\1[REDACTED]", redacted)
+    redacted = _JSON_SECRET_RE.sub(r'\1"[REDACTED]"', redacted)
     redacted = _KEY_VALUE_RE.sub(r"\1\2[REDACTED]", redacted)
     redacted = _MAGENTO_KEY_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _EMAIL_RE.sub("[REDACTED_EMAIL]", redacted)

@@ -35,6 +35,14 @@ def render_markdown(report: AnalysisReport) -> str:
         lines.append("")
         lines.append(f"- Category: `{finding.category}`")
         lines.append(f"- Count: `{finding.count}`")
+        if finding.category == "unclassified":
+            lines.append(f"- Message ({finding.level}): `{finding.message}`")
+            lines.append(
+                f"- First seen: `{finding.first_seen}`; "
+                f"last seen: `{finding.last_seen}`"
+            )
+            if finding.source is not None:
+                lines.append(f"- Source: `{finding.source}`")
         if finding.root_cause_guess:
             lines.append(f"- Root cause: {finding.root_cause_guess}")
         for evidence in finding.evidence:

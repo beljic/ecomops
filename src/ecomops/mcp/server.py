@@ -175,7 +175,14 @@ async def _analyze_project_log(
         ctx,
         project,
         lambda credentials: analyze_project_log(
-            project, log_alias, since, until, max_lines, max_bytes, **credentials
+            project,
+            log_alias,
+            since,
+            until,
+            max_lines,
+            max_bytes,
+            **credentials,
+            top_n=DEFAULT_TOP_N,
         ),
     )
     if isinstance(report, mcp_types.InputRequiredResult):

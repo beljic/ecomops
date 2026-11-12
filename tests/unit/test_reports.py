@@ -128,7 +128,7 @@ def test_text_renderers_show_source_sample_parse_and_ranges(render: object) -> N
         "Analyzed range: 2026-09-07T10:30:00+00:00 .. 2026-09-07T10:30:00+00:00"
         in rendered
     )
-    assert "No findings." in rendered
+    assert "No findings." not in rendered
 
 
 @pytest.mark.parametrize("render", RENDERERS)

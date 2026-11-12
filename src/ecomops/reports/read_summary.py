@@ -61,7 +61,9 @@ def describe_sample(sampling: SamplingMetadata) -> str:
 
 def describe_parse(stats: ParseStats) -> str:
     return (
-        f"Parsed: {stats.parsed_lines} recognized, {stats.unparsed_lines} unrecognized"
+        f"Parsed: {stats.parsed_lines} recognized, "
+        f"{stats.unparsed_lines} unrecognized, "
+        f"{stats.continuation_lines} continuation lines"
     )
 
 

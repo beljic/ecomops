@@ -53,6 +53,8 @@ class LogEntry(BaseModel):
     raw: str
     line_number: int | None = None
     access: AccessRequest | None = None
+    record_id: int | None = Field(default=None, exclude=True)
+    is_continuation: bool = False
 
 
 class SourceMetadata(BaseModel):
@@ -80,6 +82,7 @@ class ParseStats(BaseModel):
     total_lines: int = 0
     parsed_lines: int = 0
     unparsed_lines: int = 0
+    continuation_lines: int = 0
     level_counts: dict[str, int] = Field(default_factory=dict)
     format_counts: dict[str, int] = Field(default_factory=dict)
     filtered_out_lines: int = 0
@@ -125,6 +128,11 @@ class Finding(BaseModel):
     first_seen: datetime | None = None
     last_seen: datetime | None = None
     recommended_steps: list[str] = Field(default_factory=list)
+    message: str | None = None
+    level: str | None = None
+    sample: str | None = None
+    source: str | None = None
+    matched_entry_indexes: set[int] = Field(default_factory=set, exclude=True)
 
 
 class AnalysisContext(BaseModel):
@@ -156,9 +164,20 @@ class AnalysisReport(BaseModel):
     @property
     def warnings(self) -> list[str]:
         """Why the analyzed sample may not support a "no findings" conclusion."""
-        return read_warnings(
+        warnings = read_warnings(
             self.source_metadata, self.parse_stats, analyzed_lines=self.line_count
         )
+        if not warnings and not self.findings and self.parse_stats is not None:
+            error_levels = {"ERROR", "CRITICAL", "CRIT", "ALERT", "EMERGENCY", "EMERG"}
+            if any(
+                level.rsplit(".", 1)[-1].upper() in error_levels and count > 0
+                for level, count in self.parse_stats.level_counts.items()
+            ):
+                warnings.append(
+                    "sample contains ERROR-or-higher entries; no findings were "
+                    "produced for the selected range"
+                )
+        return warnings
 
 
 def read_warnings(

@@ -41,7 +41,8 @@ def test_parser_with_stats_counts_parsed_unparsed_and_normalized_levels() -> Non
     assert len(result.entries) == 5
     assert result.stats.total_lines == 5
     assert result.stats.parsed_lines == 4
-    assert result.stats.unparsed_lines == 1
+    assert result.stats.unparsed_lines == 0
+    assert result.stats.continuation_lines == 1
     assert result.stats.level_counts == {"ERROR": 1, "CRITICAL": 1, "WARNING": 1}
     assert result.stats.filtered_out_lines == 0
     assert result.entries[1].level == "main.CRITICAL"

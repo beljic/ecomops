@@ -1183,6 +1183,10 @@ def test_ssh_time_filter_keeps_continuation_lines_of_kept_entries() -> None:
     ]
     assert result.parse_stats is not None
     assert result.parse_stats.filtered_out_lines == 2
+    assert result.parse_stats.continuation_lines == 2
+    assert result.parse_stats.unparsed_lines == 0
+    assert result.entries[0].record_id == result.entries[1].record_id
+    assert result.entries[1].is_continuation is True
 
 
 def test_ssh_source_requires_the_allowed_log_folders() -> None:

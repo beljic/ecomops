@@ -360,3 +360,7 @@ def test_time_filter_keeps_continuation_lines_of_kept_entries(tmp_path: Path) ->
     assert result.line_count == 3
     assert result.parse_stats is not None
     assert result.parse_stats.filtered_out_lines == 3
+    assert result.parse_stats.continuation_lines == 3
+    assert result.parse_stats.unparsed_lines == 1
+    assert result.entries[0].record_id == result.entries[1].record_id
+    assert result.entries[1].is_continuation is True

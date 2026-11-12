@@ -105,7 +105,11 @@ def project(
         "terminal", "--format"
     ),
     top: int = typer.Option(
-        DEFAULT_TOP_N, "--top", min=1, max=MAX_TOP_N, help="Top-N size for traffic."
+        DEFAULT_TOP_N,
+        "--top",
+        min=1,
+        max=MAX_TOP_N,
+        help="Top-N size for traffic or unclassified error groups.",
     ),
     ai: bool = typer.Option(False, "--ai"),
     ai_provider: str = typer.Option("noop", "--ai-provider"),
@@ -185,7 +189,7 @@ def _run_project_action(
     if action == "security":
         security = scan_project_security(name, alias, **read_options)
         return _render_structured(security, security_lines(security), output_format)
-    return _analyze(name, alias, read_options, output_format, ai, ai_provider)
+    return _analyze(name, alias, read_options, output_format, ai, ai_provider, top)
 
 
 def _list_projects() -> None:
@@ -228,8 +232,9 @@ def _analyze(
     output_format: ReportFormat,
     ai: bool,
     ai_provider: str,
+    top_n: int,
 ) -> str:
-    report = analyze_project_log(name, alias, **read_options)
+    report = analyze_project_log(name, alias, top_n=top_n, **read_options)
     if ai:
         context = AnalysisContext(
             source=report.source,

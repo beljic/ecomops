@@ -51,6 +51,8 @@ def analyze_project_log(
     max_bytes: int | None = None,
     ssh_password: str | None = None,
     ssh_username: str | None = None,
+    *,
+    top_n: int = DEFAULT_TOP_N,
 ) -> AnalysisReport:
     """Read a configured project alias and run the deterministic analyzers."""
     project_config, selected_path, read_result = _read_project_log(
@@ -72,7 +74,7 @@ def analyze_project_log(
             MySQLAnalyzer(),
             CronAnalyzer(),
         ]
-    ).run(read_result.entries, context)
+    ).run(read_result.entries, context, top_n=top_n)
     return report.model_copy(
         update={
             "connection_type": project_config.connection.type,

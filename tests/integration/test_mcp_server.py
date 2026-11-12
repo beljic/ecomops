@@ -32,6 +32,8 @@ async def test_analyze_project_log_returns_structured_local_metadata(
         until: str | None,
         max_lines: int | None,
         max_bytes: int | None,
+        *,
+        top_n: int,
     ) -> AnalysisReport:
         received.update(
             {
@@ -97,6 +99,10 @@ async def test_analyze_project_log_returns_structured_local_metadata(
                 "first_seen": None,
                 "last_seen": None,
                 "recommended_steps": [],
+                "message": None,
+                "level": None,
+                "sample": None,
+                "source": None,
             }
         ],
         "rendered_findings": (
@@ -387,6 +393,38 @@ log_aliases:
     )
     monkeypatch.setenv("ECOMOPS_PROJECTS_DIR", str(projects_dir))
     return root
+
+
+@pytest.mark.anyio
+async def test_mcp_analysis_includes_redacted_unclassified_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mcp import Client
+
+    from ecomops.mcp import server
+
+    root = mcp_local_project(tmp_path, monkeypatch)
+    (root / "system.log").write_text(
+        "[2026-11-06T05:19:00+00:00] main.CRITICAL: Unknown failure "
+        '{"password":"synthetic-secret"} []\n'
+        "#0 /var/www/html/app/Example.php(42): Example->run()\n",
+        encoding="utf-8",
+    )
+
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "analyze_project_log", {"project": "example-shop", "log_alias": "php"}
+        )
+
+    assert result.is_error is False
+    content = result.structured_content
+    assert content is not None
+    assert content["metadata"]["parse_stats"]["continuation_lines"] == 1
+    assert content["findings"][0]["message"] == "Unknown failure"
+    assert content["findings"][0]["source"] == "/var/www/html/app/Example.php:42"
+    assert content["findings"][0]["count"] == 1
+    assert "synthetic-secret" not in str(content)
+    assert "No findings." not in content["rendered_findings"]
 
 
 @pytest.mark.anyio
