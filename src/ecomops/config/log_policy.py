@@ -40,8 +40,9 @@ _DENIED_SUFFIXES = (
     ".htpasswd",
 )
 # ``.log`` optionally followed by a rotation suffix made of digits, dashes and
-# dots; in a glob pattern ``?`` and ``*`` may stand in for rotation digits.
-_LOG_NAME = re.compile(r"\.log(?:[.-][0-9?*][0-9?*.-]*)?$")
+# dots, and an optional ``.gz``; in a glob pattern ``?`` and ``*`` may stand in
+# for rotation digits.
+_LOG_NAME = re.compile(r"\.log(?:[.-][0-9?*][0-9?*.-]*)?(?:\.gz)?$")
 
 
 class LogPathPolicyViolation(ValueError):
@@ -83,7 +84,8 @@ def check_log_path(
         normalized.parent, SYSTEM_LOG_DIR
     ):
         raise LogPathPolicyViolation(
-            f"{path} is not a log file name (*.log, *.log.1, *.log-20260901)"
+            f"{path} is not a log file name "
+            "(*.log, *.log.1, *.log-20260901, *.log-20260901.gz)"
         )
 
 

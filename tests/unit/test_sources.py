@@ -364,3 +364,16 @@ def test_time_filter_keeps_continuation_lines_of_kept_entries(tmp_path: Path) ->
     assert result.parse_stats.unparsed_lines == 1
     assert result.entries[0].record_id == result.entries[1].record_id
     assert result.entries[1].is_continuation is True
+
+
+def test_local_source_does_not_parse_a_gzip_log_as_text(tmp_path: Path) -> None:
+    log = tmp_path / "exception.log-20261105.gz"
+    log.write_bytes(b"\x1f\x8b\x08\x00compressed")
+
+    result = LocalLogSource().read(
+        alias(log), limits(), TimeRange(start=None, end=None)
+    )
+
+    assert result.entries == []
+    assert result.source_metadata.readable is False
+    assert result.source_metadata.error == "compressed logs are read over SSH only"

@@ -68,6 +68,15 @@ class LocalLogSource:
         metadata = inspect_local_file(path)
         if not metadata.readable:
             return _unreadable(metadata)
+        if path.name.endswith(".gz"):
+            return _unreadable(
+                metadata.model_copy(
+                    update={
+                        "readable": False,
+                        "error": "compressed logs are read over SSH only",
+                    }
+                )
+            )
         try:
             window = _read_window(path, limits, from_end=time_range.start is not None)
         except OSError:

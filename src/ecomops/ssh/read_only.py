@@ -112,7 +112,10 @@ class ReadOnlyPolicy:
         ):
             raise ValueError("max_bytes must be a positive integer")
         validated_path = ReadOnlyPolicy.validate_path(path)
-        return f"tail -c {max_bytes} -- {shlex.quote(validated_path)}"
+        quoted = shlex.quote(validated_path)
+        if validated_path.endswith(".gz"):
+            return f"gzip -dc -- {quoted} | tail -c {max_bytes}"
+        return f"tail -c {max_bytes} -- {quoted}"
 
     @staticmethod
     def build_file_check_command(path: str, parents: Sequence[str] = ()) -> str:

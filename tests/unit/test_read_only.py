@@ -34,6 +34,14 @@ def test_tail_bytes_command_accepts_a_large_byte_budget() -> None:
     assert command == "tail -c 10485760 -- ../logs/example-shop/transfer.log"
 
 
+def test_tail_bytes_command_decompresses_gzip_rotated_logs() -> None:
+    command = ReadOnlyPolicy.build_tail_bytes_command(
+        "/var/log/exception.log-20261105.gz", 100
+    )
+
+    assert command == ("gzip -dc -- /var/log/exception.log-20261105.gz | tail -c 100")
+
+
 @pytest.mark.parametrize("max_bytes", [0, -1, True])
 def test_tail_bytes_command_rejects_invalid_byte_limits(max_bytes: int) -> None:
     with pytest.raises(ValueError, match="max_bytes"):

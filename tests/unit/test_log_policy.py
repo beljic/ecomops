@@ -40,6 +40,7 @@ def project(
         "var/log/exception.log",
         "var/log/debug.log.1",
         "var/log/transfer.log-20260901",
+        "var/log/exception.log-20261105.gz",
         "var/log/transfer.log.2026-09-01",
         "/var/log/nginx/access.log",
         "/var/log/syslog",
